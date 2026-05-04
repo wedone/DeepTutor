@@ -112,6 +112,7 @@ export interface MessageRequestSnapshot {
 }
 
 export interface MessageItem {
+  id?: number;
   role: "user" | "assistant" | "system";
   content: string;
   capability?: string;
@@ -264,6 +265,7 @@ function reducer(state: ProviderState, action: Action): ProviderState {
             messages: [
               ...session.messages,
               {
+                id: -Date.now(),
                 role: "user",
                 content: action.content,
                 capability: action.capability || "",
@@ -338,6 +340,7 @@ function reducer(state: ProviderState, action: Action): ProviderState {
             messages: [
               ...(state.sessions[action.key]?.messages ?? []),
               {
+                id: -Date.now(),
                 role: "assistant",
                 content: "",
                 events: [],
@@ -357,6 +360,7 @@ function reducer(state: ProviderState, action: Action): ProviderState {
       let last = msgs[msgs.length - 1];
       if (last?.role !== "assistant") {
         msgs.push({
+          id: -Date.now(),
           role: "assistant",
           content: "",
           events: [],
@@ -709,6 +713,7 @@ export function UnifiedChatProvider({
             attachments,
           );
           return {
+            id: message.id,
             role: message.role,
             content:
               message.role === "assistant"

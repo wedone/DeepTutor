@@ -271,6 +271,7 @@ export default function ChatPage() {
     sendMessage,
     cancelStreamingTurn,
     regenerateLastMessage,
+    deleteTurn,
     newSession,
     loadSession,
   } = useUnifiedChat();
@@ -1283,6 +1284,7 @@ export default function ChatPage() {
               onRegenerateMessage={handleRegenerateMessage}
               onConfirmOutline={handleConfirmOutline}
               onPreviewAttachment={handlePreviewMessageAttachment}
+              onDeleteTurn={deleteTurn}
             />
             <div ref={messagesEndRef} className="h-px w-full shrink-0" />
           </div>

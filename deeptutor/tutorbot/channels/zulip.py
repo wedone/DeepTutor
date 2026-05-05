@@ -9,7 +9,6 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Literal
 
-import httpx
 from loguru import logger
 from pydantic import Field
 
@@ -56,7 +55,7 @@ class ZulipChannel(BaseChannel):
         self._listener_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._typing_tasks: dict[str, asyncio.Task] = {}
-        self._chat_ids: dict[str, str] = {}
+        self._recipient_map: dict[str, dict] = {}
 
     def is_allowed(self, sender_id: str) -> bool:
         if super().is_allowed(sender_id):
@@ -158,7 +157,12 @@ class ZulipChannel(BaseChannel):
             except Exception as e:
                 if attempt < max_retries - 1:
                     delay = 2**attempt
-                    logger.warning("Zulip API call failed (attempt {}): {}, retrying in {}s", attempt + 1, e, delay)
+                    logger.warning(
+                        "Zulip API call failed (attempt {}): {}, retrying in {}s",
+                        attempt + 1,
+                        e,
+                        delay,
+                    )
                     time.sleep(delay)
                 else:
                     logger.error("Zulip API call failed after {} retries: {}", max_retries, e)
@@ -195,12 +199,17 @@ class ZulipChannel(BaseChannel):
                         break
 
                     if result.get("result") != "success":
-                        logger.warning("Zulip get_events unexpected result: {}", result.get("msg", result.get("result")))
+                        logger.warning(
+                            "Zulip get_events unexpected result: {}",
+                            result.get("msg", result.get("result")),
+                        )
                         time.sleep(2)
                         continue
 
                     for event in result.get("events", []):
-                        self._last_event_id = max(self._last_event_id, event.get("id", self._last_event_id))
+                        self._last_event_id = max(
+                            self._last_event_id, event.get("id", self._last_event_id)
+                        )
                         if event.get("type") == "message":
                             self._on_message(event.get("message", {}))
 
@@ -278,8 +287,6 @@ class ZulipChannel(BaseChannel):
         else:
             return
 
-        self._chat_ids[chat_id] = chat_id
-
         metadata = {
             "message_id": message.get("id"),
             "msg_type": msg_type,
@@ -294,6 +301,8 @@ class ZulipChannel(BaseChannel):
             metadata["topic"] = subject
         else:
             metadata["recipient_user_id"] = sender_id
+
+        self._recipient_map[chat_id] = metadata
 
         media_paths = self._download_attachments(message)
 
@@ -317,8 +326,6 @@ class ZulipChannel(BaseChannel):
             return False
         for flag in message.get("flags", []):
             if isinstance(flag, str) and flag == "mentioned":
-                return True
-            if isinstance(flag, dict) and flag.get("id") == self._bot_user_id:
                 return True
         return False
 
@@ -363,12 +370,15 @@ class ZulipChannel(BaseChannel):
         return paths
 
     async def _send_text(self, chat_id: str, text: str, metadata: dict) -> None:
+        client = self._client
+        if not client:
+            return
         request = self._build_send_request(chat_id, text, metadata)
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._call_with_retry(
-                self._client.call_endpoint,
+                client.call_endpoint,
                 url="messages",
                 request=request,
                 timeout=self.config.timeout,
@@ -378,11 +388,14 @@ class ZulipChannel(BaseChannel):
             logger.error("Zulip send failed: {}", result.get("msg", "unknown"))
 
     async def _upload_and_send(self, chat_id: str, media_path: str, metadata: dict) -> None:
+        client = self._client
+        if not client:
+            return
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self._call_with_retry(
-                self._client.call_endpoint,
+                client.call_endpoint,
                 url="user_uploads",
                 files=[media_path],
                 timeout=self.config.timeout,
@@ -433,14 +446,11 @@ class ZulipChannel(BaseChannel):
         if not self._client or not self._bot_user_id:
             return
 
-        metadata = self._chat_ids.get(chat_id)
-        if not metadata:
+        if not chat_id.startswith("pm:"):
             return
 
-        msg_type = "private"
-        recipient_user_id = chat_id.replace("pm:", "") if chat_id.startswith("pm:") else ""
-
-        if not recipient_user_id or not recipient_user_id.isdigit():
+        recipient_user_id = chat_id[3:]
+        if not recipient_user_id.isdigit():
             return
 
         try:

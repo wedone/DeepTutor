@@ -3,6 +3,10 @@ name: Docker Build
 on:
   workflow_dispatch:
     inputs:
+      ref:
+        description: 'Branch or tag to build'
+        required: false
+        default: 'main'
       tag:
         description: 'Docker image tag'
         required: false
@@ -29,7 +33,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -64,6 +68,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            APP_VERSION=${{ github.ref_name }}
+            APP_VERSION=${{ inputs.ref }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

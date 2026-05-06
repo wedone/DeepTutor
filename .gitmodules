@@ -1,3 +1,0 @@
-[submodule "vendor/python-zulip-api"]
-	path = vendor/python-zulip-api
-	url = https://github.com/zulip/python-zulip-api.git

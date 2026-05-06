@@ -278,6 +278,99 @@ class TestDownloadAttachments:
                 assert len(paths) == 1
 
 
+class TestConvertLatexToZulip:
+    def test_inline_math(self):
+        result = ZulipChannel._convert_latex_to_zulip("The value $x^2$ is positive")
+        assert result == "The value $$x^2$$ is positive"
+
+    def test_display_math(self):
+        result = ZulipChannel._convert_latex_to_zulip("$$\n\\int_a^b f(x) dx\n$$")
+        assert "```math" in result
+        assert "\\int_a^b f(x) dx" in result
+        assert "$$" not in result
+
+    def test_display_math_single_line(self):
+        result = ZulipChannel._convert_latex_to_zulip("$$E = mc^2$$")
+        assert "```math" in result
+        assert "E = mc^2" in result
+
+    def test_mixed_inline_and_display(self):
+        result = ZulipChannel._convert_latex_to_zulip(
+            "Inline $a+b$ and display:\n$$c+d$$"
+        )
+        assert "$$a+b$$" in result
+        assert "```math" in result
+        assert "c+d" in result
+
+    def test_code_block_preserved(self):
+        result = ZulipChannel._convert_latex_to_zulip(
+            "```python\nx = $1 + $2\n```"
+        )
+        assert "```python" in result
+        assert "$1 + $2" in result
+
+    def test_inline_code_preserved(self):
+        result = ZulipChannel._convert_latex_to_zulip("Use `$x$` variable")
+        assert "`$x$`" in result
+
+    def test_no_math_unchanged(self):
+        text = "Just plain text without any math"
+        assert ZulipChannel._convert_latex_to_zulip(text) == text
+
+    def test_already_double_dollar_preserved_as_display(self):
+        result = ZulipChannel._convert_latex_to_zulip("$$x^2$$")
+        assert "```math" in result
+
+    def test_multiple_inline(self):
+        result = ZulipChannel._convert_latex_to_zulip("$a$ and $b$ and $c$")
+        assert result == "$$a$$ and $$b$$ and $$c$$"
+
+
+class TestConvertZulipLatexToStandard:
+    def test_inline_math(self):
+        result = ZulipChannel._convert_zulip_latex_to_standard("The value $$x^2$$ is positive")
+        assert result == "The value $x^2$ is positive"
+
+    def test_display_math(self):
+        result = ZulipChannel._convert_zulip_latex_to_standard(
+            "```math\n\\int_a^b f(x) dx\n```"
+        )
+        assert "$$" in result
+        assert "\\int_a^b f(x) dx" in result
+        assert "```math" not in result
+
+    def test_mixed(self):
+        result = ZulipChannel._convert_zulip_latex_to_standard(
+            "Inline $$a+b$$ and display:\n```math\nc+d\n```"
+        )
+        assert "$a+b$" in result
+        assert "$$" in result
+        assert "c+d" in result
+
+    def test_code_block_preserved(self):
+        result = ZulipChannel._convert_zulip_latex_to_standard(
+            "```python\nx = $$1 + $$2\n```"
+        )
+        assert "```python" in result
+        assert "$$1 + $$2" in result
+
+    def test_no_math_unchanged(self):
+        text = "Just plain text"
+        assert ZulipChannel._convert_zulip_latex_to_standard(text) == text
+
+    def test_roundtrip_inline(self):
+        original = "The value $x^2$ is positive"
+        zulip_fmt = ZulipChannel._convert_latex_to_zulip(original)
+        restored = ZulipChannel._convert_zulip_latex_to_standard(zulip_fmt)
+        assert restored == original
+
+    def test_roundtrip_display(self):
+        original = "$$\n\\int_a^b f(x) dx\n$$"
+        zulip_fmt = ZulipChannel._convert_latex_to_zulip(original)
+        restored = ZulipChannel._convert_zulip_latex_to_standard(zulip_fmt)
+        assert "\\int_a^b f(x) dx" in restored
+
+
 class TestBuildSendRequest:
     def test_stream_message(self):
         ch = _make_channel()

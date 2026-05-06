@@ -27,6 +27,17 @@ _UPLOAD_LINK_RE = re.compile(
     r"|!\[([^\]]*)\]\((/user_uploads/[^)\s]+)\)",
 )
 
+_DISPLAY_MATH_RE = re.compile(
+    r"^\s*\$\$(.+?)\$\$\s*$",
+    re.MULTILINE | re.DOTALL,
+)
+_INLINE_MATH_RE = re.compile(
+    r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)",
+)
+_CODE_BLOCK_RE = re.compile(
+    r"(```(?!math)[\s\S]*?```|`[^`\n]+`)",
+)
+
 ZULIP_MAX_MESSAGE_LEN = 10000
 
 
@@ -153,7 +164,8 @@ class ZulipChannel(BaseChannel):
                 await self._upload_and_send(msg.chat_id, media_path, msg.metadata)
 
             if msg.content and msg.content != "[empty message]":
-                for chunk in split_message(msg.content, ZULIP_MAX_MESSAGE_LEN):
+                converted = self._convert_latex_to_zulip(msg.content)
+                for chunk in split_message(converted, ZULIP_MAX_MESSAGE_LEN):
                     await self._send_text(msg.chat_id, chunk, msg.metadata)
         except Exception as e:
             logger.error("Zulip send error: {}", e)
@@ -277,6 +289,9 @@ class ZulipChannel(BaseChannel):
 
         msg_type = message.get("type", "")
         content = message.get("content", "")
+        content_type = message.get("content_type", "text/x-markdown")
+        if content_type == "text/x-markdown":
+            content = self._convert_zulip_latex_to_standard(content)
         sender_id = message.get("sender_id", "")
         sender_email = message.get("sender_email", "")
         display_recipient = message.get("display_recipient", "")
@@ -407,6 +422,61 @@ class ZulipChannel(BaseChannel):
                     links.append((name, path_id))
 
         return links
+
+    @staticmethod
+    def _convert_latex_to_zulip(text: str) -> str:
+        placeholders: list[str] = []
+
+        def _save_code(m: re.Match) -> str:
+            placeholders.append(m.group(0))
+            return f"\x00CODE{len(placeholders) - 1}\x00"
+
+        text = _CODE_BLOCK_RE.sub(_save_code, text)
+
+        def _display_math(m: re.Match) -> str:
+            body = m.group(1).strip()
+            return f"```math\n{body}\n```"
+
+        text = _DISPLAY_MATH_RE.sub(_display_math, text)
+
+        def _inline_math(m: re.Match) -> str:
+            body = m.group(1)
+            return f"$${body}$$"
+
+        text = _INLINE_MATH_RE.sub(_inline_math, text)
+
+        for i, code in enumerate(placeholders):
+            text = text.replace(f"\x00CODE{i}\x00", code)
+
+        return text
+
+    @staticmethod
+    def _convert_zulip_latex_to_standard(text: str) -> str:
+        placeholders: list[str] = []
+
+        def _save_code(m: re.Match) -> str:
+            placeholders.append(m.group(0))
+            return f"\x00CODE{len(placeholders) - 1}\x00"
+
+        text = _CODE_BLOCK_RE.sub(_save_code, text)
+
+        text = re.sub(
+            r"```math\s*\n(.*?)\n\s*```",
+            lambda m: f"$$\n{m.group(1).strip()}\n$$",
+            text,
+            flags=re.DOTALL,
+        )
+
+        text = re.sub(
+            r"(?<!\$)\$\$(?!\$)(.+?)(?<!\$)\$\$(?!\$)",
+            lambda m: f"${m.group(1)}$",
+            text,
+        )
+
+        for i, code in enumerate(placeholders):
+            text = text.replace(f"\x00CODE{i}\x00", code)
+
+        return text
 
     async def _send_text(self, chat_id: str, text: str, metadata: dict) -> None:
         client = self._client

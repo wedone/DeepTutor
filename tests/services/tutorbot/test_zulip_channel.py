@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -173,6 +174,108 @@ class TestIsMentioned:
         ch = _make_channel()
         ch._bot_user_id = None
         assert ch._is_mentioned({"flags": ["mentioned"]}) is False
+
+
+class TestExtractUploadLinks:
+    def test_markdown_image(self):
+        content = "Check this: ![photo.png](/user_uploads/2/ce/abc123/photo.png)"
+        links = ZulipChannel._extract_upload_links(content)
+        assert len(links) == 1
+        assert links[0][0] == "photo.png"
+        assert links[0][1] == "/user_uploads/2/ce/abc123/photo.png"
+
+    def test_markdown_file_link(self):
+        content = "Here is [report.pdf](/user_uploads/2/ce/def456/report.pdf)"
+        links = ZulipChannel._extract_upload_links(content)
+        assert len(links) == 1
+        assert links[0][0] == "report.pdf"
+        assert links[0][1] == "/user_uploads/2/ce/def456/report.pdf"
+
+    def test_html_img_src(self):
+        content = '<p><img src="/user_uploads/2/ce/abc123/photo.png"></p>'
+        links = ZulipChannel._extract_upload_links(content, content_type="text/html")
+        assert len(links) == 1
+        assert links[0][1] == "/user_uploads/2/ce/abc123/photo.png"
+
+    def test_html_a_href(self):
+        content = '<a href="/user_uploads/2/ce/def456/report.pdf">report.pdf</a>'
+        links = ZulipChannel._extract_upload_links(content, content_type="text/html")
+        assert len(links) == 1
+        assert links[0][1] == "/user_uploads/2/ce/def456/report.pdf"
+
+    def test_multiple_links(self):
+        content = (
+            "See ![img.png](/user_uploads/2/ce/aaa/img.png) "
+            "and [doc.pdf](/user_uploads/2/ce/bbb/doc.pdf)"
+        )
+        links = ZulipChannel._extract_upload_links(content)
+        assert len(links) == 2
+
+    def test_dedup_same_path(self):
+        content = (
+            "![img.png](/user_uploads/2/ce/aaa/img.png) "
+            "again [img.png](/user_uploads/2/ce/aaa/img.png)"
+        )
+        links = ZulipChannel._extract_upload_links(content)
+        assert len(links) == 1
+
+    def test_no_uploads(self):
+        content = "Just a plain message with no attachments"
+        links = ZulipChannel._extract_upload_links(content)
+        assert links == []
+
+    def test_non_upload_link_ignored(self):
+        content = "[Zulip](https://zulip.com) and [docs](/help/)"
+        links = ZulipChannel._extract_upload_links(content)
+        assert links == []
+
+    def test_empty_name_uses_path(self):
+        content = "![](/user_uploads/2/ce/abc123/photo.png)"
+        links = ZulipChannel._extract_upload_links(content)
+        assert len(links) == 1
+        assert links[0][0] == "photo.png"
+
+
+class TestDownloadAttachments:
+    def test_extracts_from_markdown_content(self):
+        ch = _make_channel()
+        message = {
+            "content": "Check ![img.png](/user_uploads/2/ce/abc/img.png)",
+            "content_type": "text/x-markdown",
+        }
+        with patch.object(ch, "_extract_upload_links", return_value=[("img.png", "/user_uploads/2/ce/abc/img.png")]):
+            with patch("deeptutor.tutorbot.channels.zulip.requests.get") as mock_get:
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status = MagicMock()
+                mock_resp.content = b"fake-image-data"
+                mock_get.return_value = mock_resp
+                with patch.object(Path, "exists", return_value=False):
+                    with patch.object(Path, "write_bytes"):
+                        paths = ch._download_attachments(message)
+                        assert len(paths) == 1
+                        mock_get.assert_called_once()
+                        call_url = mock_get.call_args[0][0]
+                        assert call_url == "https://example.zulipchat.com/user_uploads/2/ce/abc/img.png"
+
+    def test_no_uploads_returns_empty(self):
+        ch = _make_channel()
+        message = {"content": "No attachments here", "content_type": "text/x-markdown"}
+        with patch.object(ch, "_extract_upload_links", return_value=[]):
+            paths = ch._download_attachments(message)
+            assert paths == []
+
+    def test_caches_existing_file(self):
+        ch = _make_channel()
+        message = {
+            "content": "![img.png](/user_uploads/2/ce/abc/img.png)",
+            "content_type": "text/x-markdown",
+        }
+        with patch.object(ch, "_extract_upload_links", return_value=[("img.png", "/user_uploads/2/ce/abc/img.png")]):
+            from unittest.mock import mock_open
+            from pathlib import Path as RealPath
+            with patch.object(RealPath, "exists", return_value=True):
+                paths = ch._download_attachments(message)
+                assert len(paths) == 1
 
 
 class TestBuildSendRequest:

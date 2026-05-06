@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote
 
+import requests
 from loguru import logger
 from pydantic import Field
 
@@ -18,6 +21,11 @@ from deeptutor.tutorbot.channels.base import BaseChannel
 from deeptutor.tutorbot.config.paths import get_media_dir
 from deeptutor.tutorbot.config.schema import Base
 from deeptutor.tutorbot.utils.helpers import split_message
+
+_UPLOAD_LINK_RE = re.compile(
+    r"\[([^\]]*)\]\((/user_uploads/[^)\s]+)\)"
+    r"|!\[([^\]]*)\]\((/user_uploads/[^)\s]+)\)",
+)
 
 ZULIP_MAX_MESSAGE_LEN = 10000
 
@@ -277,11 +285,15 @@ class ZulipChannel(BaseChannel):
         composite_sender = f"{sender_id}|{sender_email}" if sender_email else str(sender_id)
 
         if msg_type == "stream":
-            chat_id = f"stream:{display_recipient}"
+            if isinstance(display_recipient, dict):
+                stream_name = display_recipient.get("name", str(display_recipient))
+            else:
+                stream_name = str(display_recipient)
+            chat_id = f"stream:{stream_name}"
             if self.config.group_policy == "mention":
                 if not self._is_mentioned(message):
                     return
-            content = f"**[{display_recipient} > {subject}]** {content}"
+            content = f"**[{stream_name} > {subject}]** {content}"
         elif msg_type == "private":
             chat_id = f"pm:{sender_id}"
         else:
@@ -297,7 +309,10 @@ class ZulipChannel(BaseChannel):
         }
 
         if msg_type == "stream":
-            metadata["stream"] = display_recipient
+            if isinstance(display_recipient, dict):
+                metadata["stream"] = display_recipient.get("name", str(display_recipient))
+            else:
+                metadata["stream"] = display_recipient
             metadata["topic"] = subject
         else:
             metadata["recipient_user_id"] = sender_id
@@ -331,30 +346,25 @@ class ZulipChannel(BaseChannel):
 
     def _download_attachments(self, message: dict) -> list[str]:
         paths: list[str] = []
-        attachments = message.get("attachments", [])
-        if not attachments:
+        content = message.get("content", "")
+        content_type = message.get("content_type", "text/x-markdown")
+
+        upload_links = self._extract_upload_links(content, content_type)
+        if not upload_links:
             return paths
 
         media_dir = get_media_dir("zulip")
 
-        for att in attachments:
-            att_id = att.get("id", "")
-            name = att.get("name", f"attachment_{att_id}")
-            path = att.get("path_id", "")
-
-            if not path:
-                continue
-
-            url = f"{self.config.site}{path}"
-            dest = media_dir / f"{att_id}_{name}"
+        for name, path_id in upload_links:
+            url = f"{self.config.site}{path_id}"
+            safe_name = re.sub(r'[^\w.\-]', '_', unquote(name)) if name else f"attachment_{len(paths)}"
+            dest = media_dir / safe_name
 
             if dest.exists():
                 paths.append(str(dest))
                 continue
 
             try:
-                import requests
-
                 resp = requests.get(
                     url,
                     auth=(self.config.email, self.config.api_key),
@@ -363,11 +373,40 @@ class ZulipChannel(BaseChannel):
                 resp.raise_for_status()
                 dest.write_bytes(resp.content)
                 paths.append(str(dest))
-                logger.debug("Downloaded Zulip attachment: {}", name)
+                logger.debug("Downloaded Zulip attachment: {}", name or path_id)
             except Exception as e:
-                logger.warning("Failed to download Zulip attachment {}: {}", name, e)
+                logger.warning("Failed to download Zulip attachment {}: {}", name or path_id, e)
 
         return paths
+
+    @staticmethod
+    def _extract_upload_links(content: str, content_type: str = "text/x-markdown") -> list[tuple[str, str]]:
+        links: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        if content_type == "text/html":
+            for match in re.finditer(r'href="(/user_uploads/[^"]+)"', content):
+                path_id = match.group(1)
+                if path_id not in seen:
+                    seen.add(path_id)
+                    name = Path(unquote(path_id)).name
+                    links.append((name, path_id))
+            for match in re.finditer(r'src="(/user_uploads/[^"]+)"', content):
+                path_id = match.group(1)
+                if path_id not in seen:
+                    seen.add(path_id)
+                    name = Path(unquote(path_id)).name
+                    links.append((name, path_id))
+        else:
+            for match in _UPLOAD_LINK_RE.finditer(content):
+                md_name = match.group(1) or match.group(3) or ""
+                path_id = match.group(2) or match.group(4) or ""
+                if path_id and path_id not in seen:
+                    seen.add(path_id)
+                    name = md_name if md_name else Path(unquote(path_id)).name
+                    links.append((name, path_id))
+
+        return links
 
     async def _send_text(self, chat_id: str, text: str, metadata: dict) -> None:
         client = self._client

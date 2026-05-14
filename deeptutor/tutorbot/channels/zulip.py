@@ -503,17 +503,33 @@ class ZulipChannel(BaseChannel):
         return None
 
     def _is_mentioned(self, message: dict) -> bool:
+        """Check if the bot is mentioned in the message.
+
+        For Generic bot, Zulip server may not set 'mentioned' flag in the
+        event payload, so we also detect @mention by scanning the message
+        content for patterns like @**BotName** or @**BotName|UserID**.
+        """
         if self._bot_user_id is None:
-            logger.debug("Zulip _is_mentioned: bot_user_id is None, cannot check mention")
             return False
+
+        # 1. Check flags (works for Outgoing webhook bot and some Generic bot scenarios)
+        mention_flags = {
+            "mentioned",
+            "wildcard_mentioned",
+            "stream_wildcard_mentioned",
+            "topic_wildcard_mentioned",
+        }
         for flag in message.get("flags", []):
-            if isinstance(flag, str) and flag in MENTION_FLAGS:
-                logger.debug("Zulip _is_mentioned: found flag={}", flag)
+            if isinstance(flag, str) and flag in mention_flags:
                 return True
-        logger.debug(
-            "Zulip _is_mentioned: no mention flags found, flags={}",
-            message.get("flags", []),
-        )
+
+        # 2. Fallback: detect @mention in message content (for Generic bot)
+        if self._bot_full_name:
+            content = message.get("content", "")
+            mention_pattern = f"@**{self._bot_full_name}**"
+            if mention_pattern in content:
+                return True
+
         return False
 
     def _download_attachments(self, message: dict) -> list[str]:

@@ -470,7 +470,11 @@ class ZulipChannel(BaseChannel):
             if isinstance(flag, str) and flag in mention_flags:
                 logger.debug("Zulip _is_mentioned: found flag={}", flag)
                 return True
-        logger.debug("Zulip _is_mentioned: no mention flags found, flags={}", flags)
+        if self._bot_full_name:
+            content = message.get("content", "")
+            mention_pattern = f"@**{self._bot_full_name}**"
+            if mention_pattern in content:
+                return True
         return False
 
     def _download_attachments(self, message: dict) -> list[str]:

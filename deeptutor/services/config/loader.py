@@ -13,15 +13,11 @@ from typing import Any
 
 import yaml
 
+from deeptutor.runtime.home import get_runtime_home
 from deeptutor.services.path_service import get_path_service
 
-# PROJECT_ROOT points to the actual project root directory (DeepTutor/)
-# Path(__file__) = deeptutor/services/config/loader.py
-# .parent = deeptutor/services/config/
-# .parent.parent = deeptutor/services/
-# .parent.parent.parent = deeptutor/
-# .parent.parent.parent.parent = DeepTutor/ (project root)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# Runtime workspace root. Application settings live under PROJECT_ROOT/data/user/settings.
+PROJECT_ROOT = get_runtime_home()
 
 
 def get_runtime_settings_dir(project_root: Path | None = None) -> Path:
@@ -258,13 +254,10 @@ def get_agent_params(module_name: str) -> dict:
 
 
 DEFAULT_CHAT_PARAMS: dict[str, Any] = {
-    "temperature": 0.2,
-    "responding": {"max_tokens": 8000},
-    "answer_now": {"max_tokens": 8000},
-    "thinking": {"max_tokens": 2000},
-    "observing": {"max_tokens": 2000},
-    "acting": {"max_tokens": 2000},
-    "react_fallback": {"max_tokens": 1500},
+    "temperature": 0.5,
+    "max_iterations": 20,
+    "responding": {"max_tokens": 8192},
+    "answer_now": {"max_tokens": 8192},
 }
 
 
@@ -273,9 +266,9 @@ def get_chat_params() -> dict[str, Any]:
     Read ``capabilities.chat`` from agents.yaml with deep-merged defaults.
 
     Unlike :func:`get_agent_params`, the chat capability has per-stage
-    sub-sections (``responding``, ``answer_now``, ``thinking``, ``observing``,
-    ``acting``, ``react_fallback``), each with its own ``max_tokens``. A single
-    ``temperature`` is shared across all stages.
+    sub-sections (``responding``, ``answer_now``), each with its own
+    ``max_tokens``. A single ``temperature`` and ``max_iterations`` value
+    are shared across the chat loop.
 
     Returns:
         dict: Deep-merged chat configuration. Always contains every stage key

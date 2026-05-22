@@ -94,7 +94,7 @@ def test_run_command_with_config(monkeypatch) -> None:
             "deep_research",
             "compare retrieval stacks",
             "--config-json",
-            '{"mode":"report","depth":"deep","sources":["web","papers"]}',
+            '{"mode":"report","depth":"deep"}',
         ],
     )
 
@@ -104,7 +104,6 @@ def test_run_command_with_config(monkeypatch) -> None:
     assert request.config == {
         "mode": "report",
         "depth": "deep",
-        "sources": ["web", "papers"],
     }
 
 
@@ -129,18 +128,15 @@ def test_session_list_command_uses_shared_store(monkeypatch) -> None:
     assert "Algebra" in result.output
 
 
-def test_start_command_propagates_start_web_exit_code(monkeypatch) -> None:
-    class Result:
-        returncode = 7
+def test_start_command_delegates_to_runtime_launcher(monkeypatch) -> None:
+    calls: list[object] = []
 
-    def _fake_run(cmd, check=False):  # noqa: ANN001
-        assert check is False
-        assert cmd[0]
-        assert cmd[1].endswith("scripts/start_web.py")
-        return Result()
+    def _fake_start(home=None):  # noqa: ANN001
+        calls.append(home)
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("deeptutor.runtime.launcher.start", _fake_start)
 
     result = runner.invoke(app, ["start"])
 
-    assert result.exit_code == 7
+    assert result.exit_code == 0, result.output
+    assert calls == [None]

@@ -109,7 +109,10 @@ class PocketBaseSessionStore:
             return None
         return self._session_record_to_dict(record)
 
-    async def ensure_session(self, session_id: str | None = None) -> dict[str, Any]:
+    async def ensure_session(
+        self,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         if session_id:
             session = await self.get_session(session_id)
             if session is not None:
@@ -180,19 +183,16 @@ class PocketBaseSessionStore:
             logger.warning(f"delete_session failed: {exc}")
             return False
 
-    async def list_sessions(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    async def list_sessions(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
         page = (offset // limit) + 1
 
         def _list():
-            return (
-                _pb()
-                .collection("sessions")
-                .get_list(
-                    page,
-                    limit,
-                    query_params={"sort": "-updated"},
-                )
-            )
+            query_params: dict[str, Any] = {"sort": "-updated"}
+            return _pb().collection("sessions").get_list(page, limit, query_params=query_params)
 
         try:
             result = await asyncio.to_thread(_list)
@@ -274,7 +274,12 @@ class PocketBaseSessionStore:
         events: list[dict[str, Any]] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         metadata: dict[str, Any] | None = None,
+        parent_message_id: int | None = None,
     ) -> int:
+        # ``parent_message_id`` is accepted to match the protocol shape but is
+        # not yet wired through PocketBase storage — branching only works on
+        # the SQLite backend today.
+        _ = parent_message_id
         now = time.time()
 
         def _add():
@@ -289,17 +294,9 @@ class PocketBaseSessionStore:
                 "msg_created_at": now,
             }
             record = _pb().collection("messages").create(payload)
-            # Update session title if still default
-            sessions = (
-                _pb()
-                .collection("sessions")
-                .get_full_list(query_params={"filter": f'session_id="{session_id}"'})
-            )
-            if sessions and sessions[0].title == "New conversation" and role == "user":
-                trimmed = (content or "").strip()
-                if trimmed:
-                    new_title = trimmed[:50] + ("..." if len(trimmed) > 50 else "")
-                    _pb().collection("sessions").update(sessions[0].id, {"title": new_title})
+            # Title generation is owned by the turn runtime (LLM-driven
+            # after the first user+assistant pair). Until that runs the
+            # session keeps the ``New conversation`` sentinel.
             return record
 
         try:
@@ -369,7 +366,12 @@ class PocketBaseSessionStore:
             logger.warning(f"get_messages failed: {exc}")
             return []
 
-    async def get_messages_for_context(self, session_id: str) -> list[dict[str, Any]]:
+    async def get_messages_for_context(
+        self, session_id: str, leaf_message_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        # leaf_message_id (branch-aware context) is not supported on PocketBase
+        # yet; fall back to the linear, append-only view.
+        _ = leaf_message_id
         messages = await self.get_messages(session_id)
         return [
             {"id": m["id"], "role": m["role"], "content": m["content"] or ""}

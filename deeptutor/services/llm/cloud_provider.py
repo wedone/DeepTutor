@@ -8,11 +8,12 @@ Provides both complete() and stream() methods.
 
 from collections.abc import AsyncGenerator, Mapping
 import logging
-import os
 import threading
 from typing import cast
 
 import aiohttp
+
+from deeptutor.services.config import load_system_settings
 
 from .capabilities import (
     disable_response_format_at_runtime,
@@ -127,7 +128,7 @@ def _get_aiohttp_connector() -> aiohttp.TCPConnector | None:
         is truthy; otherwise None to use aiohttp defaults.
     """
     # Thread-safe check and one-time warning emission
-    disable_flag = os.getenv("DISABLE_SSL_VERIFY", "").lower() in ("true", "1", "yes")
+    disable_flag = bool(load_system_settings()["disable_ssl_verify"])
     if not disable_flag:
         return None
 
@@ -648,9 +649,11 @@ async def _anthropic_complete(
     temperature: float | None = None,
 ) -> str:
     """Anthropic (Claude) API completion."""
-    api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        raise LLMAuthenticationError("Anthropic API key is missing.", provider="anthropic")
+        raise LLMAuthenticationError(
+            "Anthropic API key is missing from the active LLM profile.",
+            provider="anthropic",
+        )
 
     # Build URL using unified utility
     effective_base = base_url or "https://api.anthropic.com/v1"
@@ -724,9 +727,11 @@ async def _anthropic_stream(
     """Anthropic (Claude) API streaming."""
     import json
 
-    api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        raise LLMAuthenticationError("Anthropic API key is missing.", provider="anthropic")
+        raise LLMAuthenticationError(
+            "Anthropic API key is missing from the active LLM profile.",
+            provider="anthropic",
+        )
 
     # Build URL using unified utility
     effective_base = base_url or "https://api.anthropic.com/v1"
@@ -806,9 +811,11 @@ async def _cohere_complete(
     temperature: float | None = None,
 ) -> str:
     """Cohere API completion."""
-    api_key = api_key or os.getenv("COHERE_API_KEY")
     if not api_key:
-        raise LLMAuthenticationError("Cohere API key is missing.", provider="cohere")
+        raise LLMAuthenticationError(
+            "Cohere API key is missing from the active LLM profile.",
+            provider="cohere",
+        )
 
     # Build URL using unified utility
     effective_base = base_url or "https://api.cohere.ai/v1"

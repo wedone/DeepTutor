@@ -1,23 +1,23 @@
-"""
-Tests for RAG/KB consistency normalization at the capability layer.
+"""Tests for RAG/KB consistency at the capability layer.
 
+After the refactor, RAG is no longer a user-selectable tool — its availability
+is derived from whether any knowledge bases are attached for the turn.
 These tests pin the contract that:
 
-* ``deep_solve`` strips ``rag`` from the effective tool set when no
-  knowledge base is attached, and emits a warning so the UI can surface
-  the mismatch.
-* ``deep_research`` strips ``kb`` from the effective sources list when
-  no knowledge base is attached, and surfaces a clear error if all
-  sources end up empty.
-
-Both behaviours guarantee that no downstream agent or pipeline ever
-attempts a RAG call against a missing/placeholder knowledge base.
+* ``deep_solve`` forwards the right ``kb_name`` to the pipeline (``None`` when
+  no KB is attached, the KB name when one is), and strips a legacy ``rag``
+  toggle from the enabled-tools list because the pipeline owns rag mounting.
+* ``deep_research`` uses the same tool-composition policy as chat
+  (``compose_enabled_tools``): the user's composer toggles flow through
+  to the pipeline unchanged, ``rag`` auto-mounts iff a KB is attached.
+  The legacy per-source gating (``sources: ["kb", "web", "papers"]``)
+  has been removed.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -41,100 +41,41 @@ def _fake_llm_config() -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# deep_solve: rag without KB → tool stripped, warning emitted
+# deep_solve: rag presence is keyed on attached KB
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_deep_solve_strips_rag_when_no_knowledge_base() -> None:
+async def test_deep_solve_omits_rag_when_no_knowledge_base() -> None:
     from deeptutor.capabilities.deep_solve import DeepSolveCapability
 
     captured_kwargs: dict[str, Any] = {}
 
-    class _FakeSolver:
+    class _FakePipeline:
         def __init__(self, **kwargs: Any) -> None:
             captured_kwargs.update(kwargs)
 
-        async def ainit(self) -> None:
-            return None
-
-        def set_trace_callback(self, _cb: Any) -> None:
-            return None
-
-        async def solve(self, **_kwargs: Any) -> dict[str, Any]:
-            return {"final_answer": "ok", "metadata": {}}
+        async def run(self, *, stream: StreamBus, **_kwargs: Any) -> dict[str, Any]:
+            payload = {"response": "ok", "metadata": {}}
+            await stream.result(payload, source="deep_solve")
+            return payload
 
     capability = DeepSolveCapability()
     bus = StreamBus()
     context = UnifiedContext(
         user_message="solve x^2 = 4",
         active_capability="deep_solve",
+        # A legacy caller passing "rag" should be dropped — the pipeline owns
+        # rag mounting based on whether a KB is attached.
         enabled_tools=["rag", "web_search"],
-        knowledge_bases=[],  # explicitly empty
+        knowledge_bases=[],
         language="en",
     )
 
     with (
         patch(
-            "deeptutor.agents.solve.main_solver.MainSolver",
-            new=_FakeSolver,
-        ),
-        patch(
-            "deeptutor.services.llm.config.get_llm_config",
-            return_value=_fake_llm_config(),
-        ),
-    ):
-        events = await _drain(bus, capability.run(context, bus))
-
-    # rag must NOT be in the enabled_tools we forwarded to MainSolver
-    assert "rag" not in captured_kwargs["enabled_tools"]
-    assert "web_search" in captured_kwargs["enabled_tools"]
-    assert captured_kwargs["kb_name"] is None
-    assert captured_kwargs["disable_planner_retrieve"] is True
-
-    # And a warning progress event should have been emitted
-    warnings = [
-        e
-        for e in events
-        if e.type == StreamEventType.PROGRESS
-        and (e.metadata or {}).get("reason") == "rag_without_kb"
-    ]
-    assert warnings, "expected a rag_without_kb warning event"
-
-
-@pytest.mark.asyncio
-async def test_deep_solve_keeps_rag_when_knowledge_base_attached() -> None:
-    from deeptutor.capabilities.deep_solve import DeepSolveCapability
-
-    captured_kwargs: dict[str, Any] = {}
-
-    class _FakeSolver:
-        def __init__(self, **kwargs: Any) -> None:
-            captured_kwargs.update(kwargs)
-
-        async def ainit(self) -> None:
-            return None
-
-        def set_trace_callback(self, _cb: Any) -> None:
-            return None
-
-        async def solve(self, **_kwargs: Any) -> dict[str, Any]:
-            return {"final_answer": "ok", "metadata": {}}
-
-    capability = DeepSolveCapability()
-    bus = StreamBus()
-    context = UnifiedContext(
-        user_message="solve x^2 = 4",
-        active_capability="deep_solve",
-        enabled_tools=["rag", "web_search"],
-        knowledge_bases=["my-kb"],
-        language="en",
-    )
-
-    with (
-        patch(
-            "deeptutor.agents.solve.main_solver.MainSolver",
-            new=_FakeSolver,
+            "deeptutor.capabilities.deep_solve.SolvePipeline",
+            new=_FakePipeline,
         ),
         patch(
             "deeptutor.services.llm.config.get_llm_config",
@@ -143,106 +84,121 @@ async def test_deep_solve_keeps_rag_when_knowledge_base_attached() -> None:
     ):
         await _drain(bus, capability.run(context, bus))
 
-    assert "rag" in captured_kwargs["enabled_tools"]
+    assert "rag" not in captured_kwargs["enabled_tools"]
+    assert "web_search" in captured_kwargs["enabled_tools"]
+    assert captured_kwargs["kb_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_deep_solve_forwards_kb_when_knowledge_base_attached() -> None:
+    from deeptutor.capabilities.deep_solve import DeepSolveCapability
+
+    captured_kwargs: dict[str, Any] = {}
+
+    class _FakePipeline:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_kwargs.update(kwargs)
+
+        async def run(self, *, stream: StreamBus, **_kwargs: Any) -> dict[str, Any]:
+            payload = {"response": "ok", "metadata": {}}
+            await stream.result(payload, source="deep_solve")
+            return payload
+
+    capability = DeepSolveCapability()
+    bus = StreamBus()
+    context = UnifiedContext(
+        user_message="solve x^2 = 4",
+        active_capability="deep_solve",
+        enabled_tools=["web_search"],
+        knowledge_bases=["my-kb"],
+        language="en",
+    )
+
+    with (
+        patch(
+            "deeptutor.capabilities.deep_solve.SolvePipeline",
+            new=_FakePipeline,
+        ),
+        patch(
+            "deeptutor.services.llm.config.get_llm_config",
+            return_value=_fake_llm_config(),
+        ),
+    ):
+        await _drain(bus, capability.run(context, bus))
+
+    # The capability strips ``rag`` from the LLM-visible toggle list; the
+    # pipeline auto-mounts it internally based on ``kb_name``.
+    assert "rag" not in captured_kwargs["enabled_tools"]
+    assert "web_search" in captured_kwargs["enabled_tools"]
     assert captured_kwargs["kb_name"] == "my-kb"
-    assert captured_kwargs["disable_planner_retrieve"] is False
 
 
 # ---------------------------------------------------------------------------
-# deep_research: kb in sources without KB → kb dropped or hard error
+# deep_research: tool composition matches chat (no sources gating)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_deep_research_drops_kb_source_when_no_knowledge_base() -> None:
+async def test_deep_research_forwards_enabled_tools_and_kb_unchanged() -> None:
+    """The capability passes the user's composer toggles (``enabled_tools``)
+    and the attached KB (``kb_name``) through to the pipeline as-is. There
+    is no per-source gating: ``compose_enabled_tools`` (run inside the
+    pipeline) is the single arbiter of what the block loop sees."""
     from deeptutor.capabilities.deep_research import DeepResearchCapability
 
-    captured_config: dict[str, Any] = {}
+    captured_kwargs: dict[str, Any] = {}
 
-    async def _fake_outline(self, **kwargs: Any):  # noqa: ARG001
-        captured_config.update(kwargs.get("config") or {})
-        return [{"title": "Subtopic 1", "overview": "Overview 1"}]
+    class _FakePipeline:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_kwargs.update(kwargs)
+
+        async def run(self, *, stream: StreamBus, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "response": "",
+                "output_dir": "",
+                "outline_preview": True,
+                "topic": "topic",
+                "sub_topics": [{"title": "Subtopic 1", "overview": "Overview 1"}],
+            }
 
     capability = DeepResearchCapability()
     bus = StreamBus()
     context = UnifiedContext(
         user_message="A topic to research",
         active_capability="deep_research",
-        enabled_tools=["rag", "web_search"],
-        knowledge_bases=[],
+        enabled_tools=["web_search", "paper_search"],
+        knowledge_bases=["my-kb"],
         config_overrides={
             "mode": "report",
             "depth": "standard",
-            "sources": ["kb", "web"],  # kb requested but no KB attached
-        },
-        language="en",
-    )
-
-    with (
-        patch.object(
-            DeepResearchCapability,
-            "_generate_outline_preview",
-            new=_fake_outline,
-        ),
-        patch(
-            "deeptutor.services.llm.config.get_llm_config",
-            return_value=_fake_llm_config(),
-        ),
-        patch(
-            "deeptutor.services.config.load_config_with_main",
-            return_value={},
-        ),
-    ):
-        events = await _drain(bus, capability.run(context, bus))
-
-    # The runtime config must NOT enable RAG, but must still allow web.
-    researching = captured_config.get("researching", {})
-    assert researching.get("enable_rag") is False
-    assert researching.get("enable_web_search") is True
-    # rag intent stripped from request_config sources
-    assert captured_config["intent"]["sources"] == ["web"]
-
-    # A warning progress event must be present
-    warnings = [
-        e
-        for e in events
-        if e.type == StreamEventType.PROGRESS
-        and (e.metadata or {}).get("reason") == "kb_without_kb_name"
-    ]
-    assert warnings, "expected a kb_without_kb_name warning event"
-
-
-@pytest.mark.asyncio
-async def test_deep_research_errors_when_only_kb_source_and_no_knowledge_base() -> None:
-    from deeptutor.capabilities.deep_research import DeepResearchCapability
-
-    capability = DeepResearchCapability()
-    bus = StreamBus()
-    context = UnifiedContext(
-        user_message="topic",
-        active_capability="deep_research",
-        enabled_tools=["rag"],
-        knowledge_bases=[],
-        config_overrides={
-            "mode": "report",
-            "depth": "standard",
-            "sources": ["kb"],  # ONLY kb, and no KB attached
         },
         language="en",
     )
 
     with (
         patch(
+            "deeptutor.capabilities.deep_research.ResearchPipeline",
+            new=_FakePipeline,
+        ),
+        patch(
             "deeptutor.services.llm.config.get_llm_config",
             return_value=_fake_llm_config(),
         ),
         patch(
-            "deeptutor.services.config.load_config_with_main",
+            "deeptutor.capabilities.deep_research.load_config_with_main",
             return_value={},
         ),
     ):
-        events = await _drain(bus, capability.run(context, bus))
+        await _drain(bus, capability.run(context, bus))
 
-    errors = [e for e in events if e.type == StreamEventType.ERROR]
-    assert errors, "expected an error event when no usable source remains"
-    assert "source" in errors[0].content.lower()
+    assert captured_kwargs["enabled_tools"] == ["web_search", "paper_search"]
+    assert captured_kwargs["kb_name"] == "my-kb"
+    runtime_config = captured_kwargs.get("runtime_config") or {}
+    researching = runtime_config.get("researching", {})
+    # The legacy per-source enable_* flags must not appear in the
+    # runtime config — composition is the pipeline's job.
+    assert "enable_rag" not in researching
+    assert "enable_web_search" not in researching
+    assert "enable_paper_search" not in researching
+    assert "enable_run_code" not in researching
+    assert "sources" not in runtime_config.get("intent", {})

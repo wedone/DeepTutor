@@ -8,11 +8,11 @@ from pathlib import Path
 import shutil
 from typing import Any, Dict, List, Optional
 
+from deeptutor.runtime.home import get_runtime_data_root
+
 from .factory import DEFAULT_PROVIDER, get_pipeline, list_pipelines
 
-DEFAULT_KB_BASE_DIR = str(
-    Path(__file__).resolve().parent.parent.parent.parent / "data" / "knowledge_bases"
-)
+DEFAULT_KB_BASE_DIR = str(get_runtime_data_root() / "knowledge_bases")
 
 
 class RAGService:
@@ -121,6 +121,25 @@ class RAGService:
                     "trace_layer": "summary",
                 },
             )
+
+            # L1 memory trace — best-effort, never blocks the search path.
+            try:
+                from deeptutor.services.memory import get_memory_store
+                from deeptutor.services.memory.trace import TraceEvent
+
+                await get_memory_store().emit(
+                    TraceEvent.new(
+                        "kb",
+                        "query",
+                        {
+                            "query": query,
+                            "kb_name": kb_name,
+                            "answer_chars": len(answer),
+                        },
+                    )
+                )
+            except Exception:
+                pass
 
             return result
 

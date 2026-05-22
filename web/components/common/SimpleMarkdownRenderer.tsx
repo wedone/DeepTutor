@@ -3,7 +3,10 @@
 import React, { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { normalizeMarkdownForDisplay } from "@/lib/markdown-display";
+import {
+  citationAnchorIdFor,
+  normalizeMarkdownForDisplay,
+} from "@/lib/markdown-display";
 import type { MarkdownRendererProps } from "./MarkdownRenderer";
 
 function extractText(children: React.ReactNode): string {
@@ -310,11 +313,15 @@ export default function SimpleMarkdownRenderer({
       const raw = String(children).replace(/\n$/, "");
 
       if (raw.includes("\n")) {
+        // Use the same #1f2937 / #e5e7eb palette as RichMarkdownRenderer and
+        // RichCodeBlock so any stream-time fallback from Rich → Simple (or
+        // first-paint via Simple before the rich lock engages) looks visually
+        // identical to its rich counterpart.
         return (
           <div
-            className={`md-code-block ${gap} overflow-hidden rounded-xl border border-[var(--border)] bg-[#292524]`}
+            className={`md-code-block ${gap} overflow-hidden rounded-xl border border-[var(--border)] bg-[#1f2937]`}
           >
-            <pre className="overflow-x-auto p-4 text-sm leading-relaxed text-[#D6D3D1]">
+            <pre className="overflow-x-auto p-4 text-sm leading-relaxed text-[#e5e7eb]">
               <code className="md-code-block__code" {...props}>
                 {raw}
               </code>
@@ -341,9 +348,21 @@ export default function SimpleMarkdownRenderer({
       if (isCitation) {
         const label = extractText(children);
         const ids = label.split(/\s*,\s*/);
-        const scrollToRef = (event: React.MouseEvent) => {
+        const scrollToRef = (event: React.MouseEvent, id?: string) => {
           event.preventDefault();
-          const target = document.getElementById("references");
+          const hashTarget =
+            id && citationAnchorIdFor(id)
+              ? citationAnchorIdFor(id)
+              : href?.startsWith("#")
+                ? decodeURIComponent(href.slice(1))
+                : "references";
+          const target =
+            document.getElementById(hashTarget || "") ??
+            document.getElementById("references");
+          const parentDetails = target?.closest("details");
+          if (parentDetails instanceof HTMLDetailsElement) {
+            parentDetails.open = true;
+          }
           target?.scrollIntoView({ block: "start", behavior: "smooth" });
         };
         return (
@@ -357,12 +376,13 @@ export default function SimpleMarkdownRenderer({
               const prefix = prefixMatch?.[1] ?? "";
               const num =
                 prefix && prefixMatch ? id.slice(prefixMatch[0].length) : id;
+              const citationAnchor = citationAnchorIdFor(id);
               return (
                 <React.Fragment key={id}>
                   {idx > 0 && ", "}
                   <a
-                    href={href}
-                    onClick={scrollToRef}
+                    href={citationAnchor ? `#${citationAnchor}` : href}
+                    onClick={(event) => scrollToRef(event, id)}
                     className="cursor-pointer text-[var(--primary)] no-underline transition-colors hover:text-[var(--primary)]/70 hover:underline"
                   >
                     {prefix ? (

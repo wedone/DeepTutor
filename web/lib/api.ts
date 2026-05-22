@@ -1,23 +1,39 @@
 // API configuration and utility functions
 
-// Get API base URL from environment variable.
-// The launcher injects NEXT_PUBLIC_API_BASE from the canonical project-root `.env`.
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE ||
-  (() => {
+// The Docker image and the `deeptutor start` launcher both build the Next.js
+// bundle with this literal placeholder and substitute it at container/process
+// start. If a deployment serves bundles where the substitution silently
+// failed (read-only fs, missing tool, etc.), every API call would target a
+// broken URL and the Settings page would render blank with no clue why.
+// Treating the placeholder as "not configured" surfaces the failure mode
+// instead of letting fetches die quietly.
+const API_BASE_PLACEHOLDER = "__NEXT_PUBLIC_API_BASE_PLACEHOLDER__";
+
+// Get API base URL injected by the launcher from data/user/settings/system.json.
+// We deliberately do NOT throw at module-load time: the Docker build embeds the
+// literal placeholder and Next.js evaluates this module during static export,
+// which would fail every prerendered page. The runtime check in resolveBase()
+// still surfaces missing/placeholder values on the first actual call.
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE ?? "";
+
+function assertApiBaseConfigured(value: string): string {
+  if (!value || value === API_BASE_PLACEHOLDER) {
     if (typeof window !== "undefined") {
-      console.error("NEXT_PUBLIC_API_BASE is not set.");
       console.error(
-        "Please configure NEXT_PUBLIC_API_BASE in your environment and restart the application.",
+        value === API_BASE_PLACEHOLDER
+          ? "NEXT_PUBLIC_API_BASE placeholder was not substituted at startup."
+          : "NEXT_PUBLIC_API_BASE is not set.",
       );
       console.error(
-        "Run python scripts/start_tour.py to rebuild your local setup if needed.",
+        "Please configure data/user/settings/system.json and restart the application.",
       );
     }
     throw new Error(
-      "NEXT_PUBLIC_API_BASE is not configured. Please set it in your environment and restart.",
+      "NEXT_PUBLIC_API_BASE is not configured. Please update data/user/settings/system.json and restart.",
     );
-  })();
+  }
+  return value;
+}
 
 // Hostnames that always refer to the local machine. When the build-time base
 // URL points to one of these, but the page is opened from a non-local origin,
@@ -50,7 +66,7 @@ function isLoopbackHost(host: string): boolean {
  * like `http://localhost:8001/api` continue to work after the rewrite).
  */
 export function resolveBase(): string {
-  const base = API_BASE_URL;
+  const base = assertApiBaseConfigured(API_BASE_URL);
   if (typeof window === "undefined") return base;
   try {
     const url = new URL(base);

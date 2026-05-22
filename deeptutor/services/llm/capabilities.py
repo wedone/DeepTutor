@@ -117,6 +117,16 @@ PROVIDER_CAPABILITIES: dict[str, dict[str, object]] = {
         "vision_url_supported": False,
         "system_in_messages": True,
     },
+    # MiniMax's OpenAI-compatible endpoint supports Chat Completions tools /
+    # function calling for M-series text models. Response-format support is
+    # still disabled by the model override below.
+    "minimax": {
+        "supports_response_format": False,
+        "supports_streaming": True,
+        "supports_tools": True,
+        "supports_vision": False,
+        "system_in_messages": True,
+    },
     # Local providers (generally OpenAI-compatible)
     "ollama": {
         "supports_response_format": True,  # Ollama supports JSON mode
@@ -174,9 +184,20 @@ MODEL_OVERRIDES: dict[str, dict[str, object]] = {
         "has_thinking_tags": True,
         "supports_vision": False,
     },
+    # Qwen text models often share the same provider/gateway as Qwen-VL.
+    # Keep thinking-tag handling broad, but only mark explicit VL/vision model
+    # names as image-capable so RAG image indexing can fail closed.
+    "qwen/qwen2.5-vl": {"has_thinking_tags": True, "supports_vision": True},
+    "qwen/qwen3-vl": {"has_thinking_tags": True, "supports_vision": True},
+    "qwen/qwen2-vl": {"has_thinking_tags": True, "supports_vision": True},
+    "qwen/qwen-vl": {"has_thinking_tags": True, "supports_vision": True},
+    "qwen2.5-vl": {"has_thinking_tags": True, "supports_vision": True},
+    "qwen3-vl": {"has_thinking_tags": True, "supports_vision": True},
+    "qwen2-vl": {"has_thinking_tags": True, "supports_vision": True},
+    "qwen-vl": {"has_thinking_tags": True, "supports_vision": True},
     "qwen": {
         "has_thinking_tags": True,
-        "supports_vision": True,
+        "supports_vision": False,
     },
     "qwq": {
         "has_thinking_tags": True,

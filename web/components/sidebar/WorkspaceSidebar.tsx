@@ -41,6 +41,11 @@ export default function WorkspaceSidebar() {
     }
   }, []);
 
+  // First mount shows the skeleton; subsequent refreshes triggered by
+  // ``sidebarRefreshToken`` (STREAM_END, server-side session bind,
+  // turn deletion) silently swap in the new list. Resetting the ref
+  // each refresh briefly re-renders the loading skeleton, which the
+  // user perceives as a flicker on every message send / Answer Now.
   useEffect(() => {
     void refreshSessions();
   }, [refreshSessions, sidebarRefreshToken]);

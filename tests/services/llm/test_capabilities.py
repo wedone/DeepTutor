@@ -5,6 +5,7 @@ from deeptutor.services.llm.capabilities import (
     get_effective_temperature,
     has_thinking_tags,
     supports_response_format,
+    supports_tools,
     supports_vision,
 )
 
@@ -57,6 +58,16 @@ def test_moonshot_vision_models() -> None:
     assert supports_vision("moonshot", "kimi-latest") is False
 
 
+def test_minimax_openai_compat_supports_tools_without_response_format() -> None:
+    """MiniMax M-series models support OpenAI-compatible tool calls, but
+    the provider still should not receive json_object response_format."""
+    assert supports_tools("minimax", "MiniMax-M2.7-highspeed") is True
+    assert supports_response_format("minimax", "MiniMax-M2.7-highspeed") is False
+
+
 def test_qwen_model_override_enables_vision() -> None:
     assert supports_vision("dashscope", "qwen-vl-plus") is True
     assert supports_vision("openai", "qwen2.5-vl-72b-instruct") is True
+    assert supports_vision("openai", "Qwen/Qwen3-VL-235B-A22B-Instruct") is True
+    assert supports_vision("openai", "qwen-plus") is False
+    assert supports_vision("openai", "Qwen/Qwen3-235B-A22B-Instruct") is False

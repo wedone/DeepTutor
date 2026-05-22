@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft, Bot, Loader2, Send } from "lucide-react";
-import { apiUrl, wsUrl } from "@/lib/api";
+import { apiFetch, apiUrl, wsUrl } from "@/lib/api";
 import { firstParam } from "@/lib/route-params";
 import AssistantResponse from "@/components/common/AssistantResponse";
 import { SimpleComposerInput } from "@/components/chat/home/SimpleComposerInput";
@@ -120,12 +120,14 @@ export default function BotChatPage() {
       return;
     }
     let cancelled = false;
+    // Clear stale transcript immediately when navigating between bots.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMessages([]);
     setThinking([]);
     thinkingRef.current = [];
     setStreaming(false);
 
-    fetch(apiUrl(`/api/v1/tutorbot/${botId}`))
+    apiFetch(apiUrl(`/api/v1/tutorbot/${botId}`))
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!cancelled) setBot(data);
@@ -134,7 +136,7 @@ export default function BotChatPage() {
         if (!cancelled) setBot(null);
       });
 
-    fetch(apiUrl(`/api/v1/tutorbot/${botId}/history`))
+    apiFetch(apiUrl(`/api/v1/tutorbot/${botId}/history`))
       .then((r) => (r.ok ? r.json() : []))
       .then(
         (

@@ -82,7 +82,7 @@ export default function UtilitySidebar() {
         setActiveSessionId(null);
       }
     },
-    [activeSessionId, setActiveSessionId],
+    [activeSessionId, setActiveSessionId, t],
   );
 
   return (

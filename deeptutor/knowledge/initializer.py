@@ -8,13 +8,13 @@ import asyncio
 from datetime import datetime
 import json
 import logging
-import os
 from pathlib import Path
 import shutil
 from typing import Optional
 
 from deeptutor.knowledge.naming import validate_knowledge_base_name
 from deeptutor.knowledge.progress_tracker import ProgressStage, ProgressTracker
+from deeptutor.services.config import resolve_llm_runtime_config
 from deeptutor.services.rag.factory import DEFAULT_PROVIDER
 from deeptutor.services.rag.file_routing import FileTypeRouter
 from deeptutor.services.rag.service import RAGService
@@ -223,11 +223,6 @@ class KnowledgeBaseInitializer:
         """No-op retained for compatibility with previous pipelines."""
         logger.info("Skipping legacy structure cleanup (llamaindex-only mode)")
 
-    def extract_numbered_items(self, batch_size: int = 20) -> None:
-        """Compatibility no-op: numbered-item extraction is deprecated."""
-        _ = batch_size
-        logger.info("Skipping numbered items extraction (deprecated feature removed)")
-
     async def display_statistics_generic(self) -> None:
         """Display basic statistics."""
         raw_files = list(self.raw_dir.glob("*")) if self.raw_dir.exists() else []
@@ -250,7 +245,6 @@ async def initialize_knowledge_base(
     base_dir: str = "./data/knowledge_bases",
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
-    skip_extract: bool = False,
 ) -> bool:
     """Convenience initializer used by CLI wrappers."""
     from deeptutor.knowledge.manager import KnowledgeBaseManager
@@ -267,8 +261,6 @@ async def initialize_knowledge_base(
         initializer.create_directory_structure()
         copied_files = initializer.copy_documents(source_files)
         await initializer.process_documents()
-        if not skip_extract:
-            initializer.extract_numbered_items()
         manager.update_kb_status(
             name=kb_name,
             status="ready",
@@ -306,16 +298,22 @@ async def initialize_knowledge_base(
 
 
 async def main() -> None:
+    try:
+        llm_config = resolve_llm_runtime_config()
+        default_api_key = llm_config.api_key
+        default_base_url = llm_config.effective_url
+    except Exception:
+        default_api_key = ""
+        default_base_url = ""
+
     parser = argparse.ArgumentParser(description="Initialize a new knowledge base from documents")
     parser.add_argument("name", help="Knowledge base name")
     parser.add_argument("--docs", nargs="+", help="Document files to process")
     parser.add_argument("--docs-dir", help="Directory containing documents to process")
     parser.add_argument("--base-dir", default="./knowledge_bases")
-    parser.add_argument("--api-key", default=os.getenv("LLM_API_KEY"))
-    parser.add_argument("--base-url", default=os.getenv("LLM_HOST"))
+    parser.add_argument("--api-key", default=default_api_key)
+    parser.add_argument("--base-url", default=default_base_url)
     parser.add_argument("--skip-processing", action="store_true")
-    parser.add_argument("--skip-extract", action="store_true")
-    parser.add_argument("--batch-size", type=int, default=20)
 
     args = parser.parse_args()
 
@@ -340,8 +338,6 @@ async def main() -> None:
 
     if not args.skip_processing:
         await initializer.process_documents()
-    if not args.skip_processing and not args.skip_extract:
-        initializer.extract_numbered_items(batch_size=args.batch_size)
 
 
 if __name__ == "__main__":

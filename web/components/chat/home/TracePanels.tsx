@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   BrainCircuit,
   ChevronDown,
@@ -13,6 +20,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import MarkdownRenderer from "@/components/common/MarkdownRenderer";
+import { formatTurnDuration, getTurnDurationSeconds } from "@/lib/trace-timing";
 import type { StreamEvent } from "@/lib/unified-ws";
 
 type TraceMetadata = {
@@ -25,14 +33,33 @@ type TraceMetadata = {
   trace_kind?: string;
   trace_id?: string;
   call_state?: string;
+  // Set by the chat pipeline on the final iteration's reasoning sub-trace.
+  // Marks "this sub-trace's text has been re-emitted as the final-response
+  // CONTENT event in the same turn, so don't render it as a duplicate row."
+  absorbed_into_final?: boolean;
   step_id?: string;
   round?: number;
   query?: string;
   tool_name?: string;
+  block_id?: string;
   trace_layer?: string;
   output_mode?: string;
   quality?: string;
   sources?: Array<Record<string, unknown>>;
+  // Set by deep_question's QuestionPipeline on per-question content events
+  // (call_kind="quiz_question_emitted"). 0-based; display as 1-based.
+  question_index?: number;
+  total_questions?: number;
+  qa_pair?: Record<string, unknown>;
+  // Set by deep_research so the top-level trace row can show the active
+  // research/reporting sub-state instead of generic reasoning/tool labels.
+  research_status_key?: string;
+  topic_index?: number | string;
+  topic_title?: string;
+  report_part?: string;
+  section_index?: number | string;
+  section_count?: number | string;
+  section_title?: string;
 };
 
 type ResearchStageId = "understand" | "decompose" | "evidence" | "result";
@@ -135,37 +162,6 @@ function getTraceGroup(events: StreamEvent[]) {
   return "";
 }
 
-function getTraceDurationLabel(events: StreamEvent[]) {
-  let start: number | null = null;
-  let end: number | null = null;
-  for (const event of events) {
-    const state = String(getTraceMeta(event).call_state || "");
-    if (state === "running" && start === null) start = event.timestamp;
-    if ((state === "complete" || state === "error") && end === null)
-      end = event.timestamp;
-  }
-  if (start === null || end === null) return "";
-  const seconds = Math.max(1, Math.round(end - start));
-  return `${seconds}s`;
-}
-
-function getTraceStartTimestamp(events: StreamEvent[]) {
-  for (const event of events) {
-    const state = String(getTraceMeta(event).call_state || "");
-    if (state === "running") return event.timestamp;
-  }
-  return null;
-}
-
-function getActiveTraceDurationSeconds(
-  events: StreamEvent[],
-  nowSeconds: number,
-) {
-  const start = getTraceStartTimestamp(events);
-  if (start === null) return null;
-  return Math.max(1, Math.round(nowSeconds - start));
-}
-
 function isTracePending(events: StreamEvent[]) {
   let hasRunning = false;
   let hasTerminal = false;
@@ -179,7 +175,6 @@ function isTracePending(events: StreamEvent[]) {
 
 function getTraceHeader(
   events: StreamEvent[],
-  nowSeconds?: number,
   nested?: boolean,
   t: (key: string, opts?: Record<string, unknown>) => string = (k) => k,
 ) {
@@ -188,10 +183,6 @@ function getTraceHeader(
   const group = getTraceGroup(events);
   const kind = getTraceCallKind(events);
   const meta = getTraceMeta(events[0]);
-  const duration =
-    kind === "math_render_output" && isTracePending(events) && nowSeconds
-      ? `${getActiveTraceDurationSeconds(events, nowSeconds) ?? 1}s`
-      : getTraceDurationLabel(events);
 
   let title = label;
   if (
@@ -221,8 +212,21 @@ function getTraceHeader(
     title = t("Plan");
   } else if (role === "observe" || kind === "llm_observation") {
     title = t("Observe");
+  } else if (role === "quiz_question" || kind === "quiz_question_emitted") {
+    // Each quiz question gets its own sub-trace card; index is 0-based in
+    // metadata, so display as 1-based for the user.
+    const idx = Number(meta.question_index);
+    title = Number.isFinite(idx)
+      ? t("Question {{n}}", { n: idx + 1 })
+      : t("Question");
   } else if (role === "response" || kind === "llm_final_response") {
     title = t("Response");
+  } else if (role === "reflection" || kind === "tool_result_reflection") {
+    // Tool Summarizer sub-trace (Phase 1 of the question pipeline). The
+    // top-level status row carries the verbose "DeepTutor Reflecting…"
+    // wording; the sub-trace just labels itself "Reflecting" so the card
+    // header stays short.
+    title = t("Reflecting");
   } else if (role === "thought" || kind === "llm_reasoning") {
     title = t("Thought");
   } else if (kind === "llm_generation") {
@@ -237,9 +241,7 @@ function getTraceHeader(
     }
   }
 
-  return duration
-    ? t("{{title}} for {{duration}}", { title, duration })
-    : title;
+  return title;
 }
 
 function getTraceText(
@@ -262,13 +264,79 @@ function getTraceText(
   return textEvents.map((event) => event.content).join("");
 }
 
+// Long string values in tool args are almost always base64 payloads
+// (image bytes, file blobs) the LLM never typed itself — they were
+// server-injected by the chat pipeline. Pretty-printing the raw value
+// fills the trace with megabytes of noise, so we elide anything past
+// this many characters down to a short summary.
+const TRACE_ARGS_MAX_STRING_CHARS = 200;
+
+function elideLongStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length > TRACE_ARGS_MAX_STRING_CHARS) {
+      const head = value.slice(0, 40);
+      return `${head}… <${value.length.toLocaleString()} chars elided>`;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(elideLongStrings);
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = elideLongStrings(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 function formatTraceArgs(args: unknown) {
   if (args == null) return "";
   try {
-    return JSON.stringify(args, null, 2);
+    return JSON.stringify(elideLongStrings(args), null, 2);
   } catch {
     return String(args);
   }
+}
+
+/**
+ * Per-tool nice rendering for ``tool_call`` args. Some tools (notably
+ * ``ask_user``) have args that are large structured payloads which the
+ * UI also renders as a dedicated card below the trace — dumping the raw
+ * JSON twice is just noise. Returning ``null`` falls back to the
+ * generic JSON ``<pre>`` block.
+ */
+function renderNiceToolArgs(
+  toolName: string | undefined,
+  rawArgs: unknown,
+): ReactNode | null {
+  if (toolName !== "ask_user" || !rawArgs || typeof rawArgs !== "object") {
+    return null;
+  }
+  const obj = rawArgs as Record<string, unknown>;
+  const questions = Array.isArray(obj.questions)
+    ? (obj.questions as Array<Record<string, unknown>>)
+    : [];
+  if (questions.length === 0) return null;
+  return (
+    <ul className="ml-3 mt-0.5 space-y-0.5 text-[10.5px] leading-[1.5] not-italic">
+      {questions.map((q, idx) => {
+        const prompt = String(q.prompt ?? q.question ?? "").trim();
+        if (!prompt) return null;
+        return (
+          <li
+            key={idx}
+            className="flex items-start gap-1.5 text-[var(--muted-foreground)]"
+          >
+            <span className="shrink-0 tabular-nums opacity-50">{idx + 1}.</span>
+            <span className="min-w-0 flex-1">{prompt}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -295,6 +363,14 @@ function buildDisplayItems(traceGroups: TraceItem[]): DisplayItem[] {
     const kind = getTraceCallKind(group.events);
 
     if (kind === "llm_final_response") continue;
+    // The chat pipeline streams the final iteration's prose as ``thinking``
+    // events into a sub-trace AND re-emits it as a ``llm_final_response``
+    // content event. The sub-trace itself is tagged ``absorbed_into_final``
+    // on its terminal progress event so we drop it here — otherwise the
+    // final answer would appear twice (once in the trace box, once in the
+    // body).
+    if (group.events.some((e) => getTraceMeta(e).absorbed_into_final === true))
+      continue;
 
     if (groupType === "react_round" && stepId) {
       if (stepId_ === stepId) {
@@ -313,25 +389,6 @@ function buildDisplayItems(traceGroups: TraceItem[]): DisplayItem[] {
   }
   flushStep();
   return items;
-}
-
-function getStepGroupDuration(traces: TraceItem[]): string {
-  let start: number | null = null;
-  let end: number | null = null;
-  for (const trace of traces) {
-    for (const event of trace.events) {
-      const state = String(getTraceMeta(event).call_state || "");
-      if (state === "running" && (start === null || event.timestamp < start))
-        start = event.timestamp;
-      if (
-        (state === "complete" || state === "error") &&
-        (end === null || event.timestamp > end)
-      )
-        end = event.timestamp;
-    }
-  }
-  if (start === null || end === null) return "";
-  return `${Math.max(1, Math.round(end - start))}s`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -370,6 +427,37 @@ function ScrollableTraceBody({
     <div ref={ref} onScroll={handleScroll} className={className}>
       {children}
     </div>
+  );
+}
+
+/**
+ * Persistently-expanded ``<details>`` wrapper. Initialises ``open`` to
+ * ``true`` so the panel renders expanded from the first paint, and tracks
+ * subsequent toggles purely from user clicks — we never re-close it as a
+ * side-effect of the trace finishing (per product direction: all traces stay
+ * open by default).
+ */
+function ExpandableDetails({
+  summary,
+  className,
+  children,
+}: {
+  summary: ReactNode;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}
+      className={className}
+    >
+      <summary className="list-none cursor-pointer hover:text-[var(--foreground)] [&::-webkit-details-marker]:hidden">
+        {summary}
+      </summary>
+      {children}
+    </details>
   );
 }
 
@@ -475,11 +563,20 @@ function TraceRowBody({
               <div className="space-y-0.5">
                 {toolEvents.map((event, idx) => {
                   if (event.type === "tool_call") {
-                    const formattedArgs = formatTraceArgs(event.metadata?.args);
+                    const toolName =
+                      (event.metadata?.tool as string | undefined) ?? undefined;
+                    const niceArgs = renderNiceToolArgs(
+                      toolName,
+                      event.metadata?.args,
+                    );
+                    const formattedArgs = niceArgs
+                      ? ""
+                      : formatTraceArgs(event.metadata?.args);
                     return (
                       <div key={`${callId}-tool-call-${idx}`}>
                         <span className="opacity-50">→ </span>
                         <span>{event.content}</span>
+                        {niceArgs ?? null}
                         {formattedArgs && (
                           <pre className="ml-3 mt-0.5 whitespace-pre-wrap break-words rounded-md bg-[var(--muted)] px-2 py-1 font-mono text-[10px] not-italic leading-[1.5] text-[var(--muted-foreground)]">
                             {formattedArgs}
@@ -547,11 +644,20 @@ function TraceRowBody({
             <div className="space-y-0.5">
               {toolEvents.map((event, idx) => {
                 if (event.type === "tool_call") {
-                  const formattedArgs = formatTraceArgs(event.metadata?.args);
+                  const toolName =
+                    (event.metadata?.tool as string | undefined) ?? undefined;
+                  const niceArgs = renderNiceToolArgs(
+                    toolName,
+                    event.metadata?.args,
+                  );
+                  const formattedArgs = niceArgs
+                    ? ""
+                    : formatTraceArgs(event.metadata?.args);
                   return (
                     <div key={`${callId}-tool-call-${idx}`}>
                       <span className="opacity-50">→ </span>
                       <span>{event.content}</span>
+                      {niceArgs ?? null}
                       {formattedArgs && (
                         <pre className="ml-3 mt-0.5 whitespace-pre-wrap break-words rounded-md bg-[var(--muted)] px-2 py-1 font-mono text-[10px] not-italic leading-[1.5] text-[var(--muted-foreground)]">
                           {formattedArgs}
@@ -666,21 +772,40 @@ function hasExpandableContent(
 export function CallTracePanel({
   events,
   isStreaming,
+  nested = false,
 }: {
   events: StreamEvent[];
   isStreaming?: boolean;
+  // When the panel is rendered inside another shell that already supplies its
+  // own framing, pass ``nested`` to skip
+  // the card wrapper so we don't end up with card-in-card visuals.
+  nested?: boolean;
 }) {
   const { t } = useTranslation();
-  const [nowSeconds, setNowSeconds] = useState(() => Date.now() / 1000);
+
+  // Sticky-bottom auto-scroll for the outer trace card. While the user is
+  // pinned near the bottom we keep them there as new trace events stream in;
+  // the moment they scroll up we release the stick so they can browse earlier
+  // trace rows without being yanked back. New streaming turns re-arm the
+  // stick so the next assistant response starts pinned at the bottom again.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
 
   useEffect(() => {
-    if (!isStreaming) return;
-    const timer = window.setInterval(
-      () => setNowSeconds(Date.now() / 1000),
-      1000,
-    );
-    return () => window.clearInterval(timer);
+    if (!isStreaming || nested || !stickRef.current) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+
+  useEffect(() => {
+    if (isStreaming) stickRef.current = true;
   }, [isStreaming]);
+
+  const handleOuterScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  }, []);
 
   const traceGroups = useMemo(() => {
     const groups: TraceItem[] = [];
@@ -706,7 +831,12 @@ export function CallTracePanel({
     [traceGroups],
   );
 
-  if (!traceGroups.length) return null;
+  // Hide the outer container entirely when no sub-trace ends up being
+  // rendered. ``traceGroups`` can be non-empty even when every group is
+  // filtered out by ``buildDisplayItems`` (final-response groups and groups
+  // tagged ``absorbed_into_final``) — in that case we used to draw an
+  // empty bordered box. Check the materialised displayItems instead.
+  if (!displayItems.length) return null;
 
   function renderTraceRow(
     { callId, events: callEvents }: TraceItem,
@@ -719,7 +849,7 @@ export function CallTracePanel({
     const role = getTraceRole(callEvents);
     const group = getTraceGroup(callEvents);
     const kind = getTraceCallKind(callEvents);
-    const header = getTraceHeader(callEvents, nowSeconds, nested, t);
+    const header = getTraceHeader(callEvents, nested, t);
     const active =
       Boolean(isStreaming) && isGloballyLast && isTracePending(callEvents);
     const isFinalResponse = kind === "llm_final_response";
@@ -737,7 +867,12 @@ export function CallTracePanel({
             className="shrink-0 transition-transform group-open:rotate-180"
           />
         ) : (
-          <span className="w-3 shrink-0" />
+          // Pending row with no content yet — a faint dot preserves the
+          // chevron's column width and keeps the icon + label from sliding
+          // left every time a trace starts.
+          <span className="flex w-3 shrink-0 items-center justify-center">
+            <span className="h-[3px] w-[3px] rounded-full bg-current opacity-45" />
+          </span>
         )}
         <TraceIcon kind={kind} phase={phase} />
         <span>{header}</span>
@@ -750,10 +885,7 @@ export function CallTracePanel({
     }
 
     return (
-      <details key={callId} open={active} className="group">
-        <summary className="list-none cursor-pointer hover:text-[var(--foreground)] [&::-webkit-details-marker]:hidden">
-          {summaryRow}
-        </summary>
+      <ExpandableDetails key={callId} className="group" summary={summaryRow}>
         {nested ? (
           <div className="ml-5 mr-3 mt-0.5 px-3 py-1">
             <TraceRowBody
@@ -777,12 +909,24 @@ export function CallTracePanel({
             />
           </ScrollableTraceBody>
         )}
-      </details>
+      </ExpandableDetails>
     );
   }
 
+  // Cap the trace card height so a long sequence of expanded traces becomes
+  // a self-contained scroll region instead of pushing the rest of the page
+  // (and the composer) off-screen. Nested panels live inside their parent's
+  // own scroll area, so we only constrain the standalone card.
+  const rootClassName = nested
+    ? "mb-3 space-y-0.5"
+    : "mb-3 max-h-[240px] space-y-0.5 overflow-y-auto rounded-xl border border-[var(--border)]/50 bg-[var(--card)]/50 px-3 py-2";
+
   return (
-    <div className="mb-3 space-y-0.5">
+    <div
+      ref={nested ? undefined : scrollRef}
+      onScroll={nested ? undefined : handleOuterScroll}
+      className={rootClassName}
+    >
       {displayItems.map((item, displayIdx) => {
         const isLastDisplayItem = displayIdx === displayItems.length - 1;
 
@@ -795,33 +939,28 @@ export function CallTracePanel({
             Boolean(isStreaming) &&
             isLastDisplayItem &&
             isTracePending(lastTrace.events);
-          const stepDuration = isActiveStep
-            ? ""
-            : getStepGroupDuration(item.traces);
 
           return (
-            <details
+            <ExpandableDetails
               key={item.stepId}
-              open={isActiveStep || undefined}
               className="group/step"
-            >
-              <summary className="list-none cursor-pointer hover:text-[var(--foreground)] [&::-webkit-details-marker]:hidden">
+              summary={
                 <div className="flex items-center gap-2 py-0.5 not-italic text-[12px] font-medium text-[var(--muted-foreground)]">
                   <ChevronDown
                     size={12}
                     className="shrink-0 transition-transform group-open/step:rotate-180"
                   />
                   <Sparkles size={12} strokeWidth={1.6} className="shrink-0" />
-                  <span>Step {item.stepId}</span>
+                  <span>{t("Step {{n}}", { n: item.stepId })}</span>
                   <span className="text-[11px] opacity-60">
-                    {roundCount} {roundCount === 1 ? "round" : "rounds"}
-                    {stepDuration ? ` · ${stepDuration}` : ""}
+                    {t("{{count}} round", { count: roundCount })}
                   </span>
                   {isActiveStep && (
                     <Loader2 size={11} className="animate-spin" />
                   )}
                 </div>
-              </summary>
+              }
+            >
               <ScrollableTraceBody
                 autoScroll={isActiveStep}
                 className="ml-5 mr-3 mt-0.5 max-h-[280px] overflow-y-auto px-3 py-1"
@@ -837,7 +976,6 @@ export function CallTracePanel({
 
                     if (trGroup === "react_round") {
                       const roundNum = trMeta.round;
-                      const duration = getTraceDurationLabel(trace.events);
                       const thoughtText = getTraceText(trace.events, [
                         "thinking",
                       ]);
@@ -862,13 +1000,8 @@ export function CallTracePanel({
                           )}
                           <div className="mb-1 flex items-center gap-1.5 not-italic text-[11px]">
                             <span className="font-bold uppercase tracking-[0.08em] text-[var(--muted-foreground)]">
-                              Round {roundNum}
+                              {t("Round {{n}}", { n: roundNum })}
                             </span>
-                            {duration && (
-                              <span className="font-normal text-[var(--muted-foreground)]/40">
-                                {duration}
-                              </span>
-                            )}
                             {roundActive && (
                               <Loader2 size={10} className="animate-spin" />
                             )}
@@ -938,12 +1071,7 @@ export function CallTracePanel({
                     }
 
                     /* Non-round trace (retrieve, tool, etc.) — inline within the step */
-                    const inlineHeader = getTraceHeader(
-                      trace.events,
-                      nowSeconds,
-                      true,
-                      t,
-                    );
+                    const inlineHeader = getTraceHeader(trace.events, true, t);
                     const progressEvts = trace.events.filter(
                       (e) =>
                         e.type === "progress" &&
@@ -1032,13 +1160,494 @@ export function CallTracePanel({
                   })}
                 </div>
               </ScrollableTraceBody>
-            </details>
+            </ExpandableDetails>
           );
         }
 
         return renderTraceRow(item.trace, isLastDisplayItem, false);
       })}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  StreamingStatus — breathing "reasoning" / "tool using" indicator   */
+/* ------------------------------------------------------------------ */
+
+type MarkProps = {
+  size?: number;
+  className?: string;
+  strokeWidth?: number;
+};
+
+function MarkSvg({
+  size = 16,
+  className,
+  strokeWidth = 1.5,
+  children,
+}: MarkProps & { children: ReactNode }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
+
+/**
+ * Reasoning — asymmetric 12-ray radial burst. Tilted ~12° so it reads as
+ * hand-sketched rather than geometric; long cardinal rays + medium diagonals
+ * + short accent rays in between for an organic sparkle.
+ */
+function ReasoningMark(props: MarkProps) {
+  return (
+    <MarkSvg {...props}>
+      <g transform="rotate(12 12 12)">
+        <path d="M12 2 L12 7.5" />
+        <path d="M12 22 L12 16.5" />
+        <path d="M2 12 L7.5 12" />
+        <path d="M22 12 L16.5 12" />
+        <path d="M4.6 4.6 L8.4 8.4" />
+        <path d="M19.4 19.4 L15.6 15.6" />
+        <path d="M4.2 19.8 L8.2 15.8" />
+        <path d="M19.8 4.2 L15.8 8.2" />
+        <path d="M7.6 2.3 L9 5.8" />
+        <path d="M16.4 2.3 L15 5.8" />
+        <path d="M7.6 21.7 L9 18.2" />
+        <path d="M16.4 21.7 L15 18.2" />
+      </g>
+    </MarkSvg>
+  );
+}
+
+/**
+ * Tool using — an off-axis orbital motif: a soft elliptical orbit arc with
+ * a small filled satellite riding it and two stray sparks. Reads as something
+ * "in motion / being operated" without being a literal wrench.
+ */
+function ToolMark(props: MarkProps) {
+  return (
+    <MarkSvg {...props}>
+      {/* Central node */}
+      <circle cx="12" cy="13" r="2.4" />
+      {/* Open orbital arc on a slight tilt */}
+      <path d="M3.5 9.5 A 10.5 8 -18 0 1 20.5 14" />
+      {/* Filled satellite riding the orbit */}
+      <circle cx="20.5" cy="14" r="1.5" fill="currentColor" stroke="none" />
+      {/* Stray accent sparks */}
+      <path d="M5 19 L7.2 17.5" />
+      <path d="M18 4 L19.5 6" />
+    </MarkSvg>
+  );
+}
+
+/**
+ * Responding — a flowing ink-stroke that swoops up to the right, terminating
+ * in a small dot, like a quill marking paper. Suggests "writing out an
+ * answer" without being a literal pen icon.
+ */
+function RespondingMark(props: MarkProps) {
+  return (
+    <MarkSvg {...props}>
+      {/* Sweeping brush curve */}
+      <path d="M3 18 Q 8 7 14 11 T 21 6.5" />
+      {/* Quill tip — short tick + filled dot */}
+      <circle cx="21" cy="6.5" r="1.4" fill="currentColor" stroke="none" />
+      {/* Ink drop accent below */}
+      <circle cx="5.5" cy="20.5" r="0.9" fill="currentColor" stroke="none" />
+    </MarkSvg>
+  );
+}
+
+/**
+ * Responded — a settled, slightly softer mark: a compact 4-ray bloom with
+ * a filled inner dot. Conveys "thought captured, complete" without echoing
+ * the reasoning burst.
+ */
+function RespondedMark(props: MarkProps) {
+  return (
+    <MarkSvg {...props}>
+      <g transform="rotate(8 12 12)">
+        {/* Inner anchor */}
+        <circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none" />
+        {/* 4 short cardinal rays */}
+        <path d="M12 4.5 L12 8" />
+        <path d="M12 19.5 L12 16" />
+        <path d="M4.5 12 L8 12" />
+        <path d="M19.5 12 L16 12" />
+        {/* 2 longer diagonal accents — asymmetric for character */}
+        <path d="M6 6 L8.6 8.6" />
+        <path d="M18 18 L15.4 15.4" />
+      </g>
+    </MarkSvg>
+  );
+}
+
+type StreamingMode =
+  | "reasoning"
+  | "tool_using"
+  | "responding"
+  | "responded"
+  | "planning"
+  | "drafting"
+  | "exploring"
+  | "quizzing"
+  | "reflecting";
+
+/**
+ * Picks the status label shown above the trace card.
+ *
+ * We scan in reverse so each round's latest signal wins — a tool result
+ * mid-iteration flips the label back to reasoning, a planning chunk
+ * arriving after a tool flips it to planning, etc. Per-mode mapping:
+ *
+ *   ``llm_planning`` chunks  → planning   (solve plan / replan / pre-retrieve)
+ *   ``tool_call`` event      → tool_using (any explicit tool call)
+ *   ``llm_final_response``
+ *     stage=``writing``      → responding (solve synthesize, also chat default)
+ *     stage=``reasoning``    → drafting   (solve per-step FINISH)
+ *   ``llm_reasoning`` chunks → reasoning  (THINK / chat default)
+ *
+ * Falls back to ``reasoning`` while events are still warming up.
+ */
+function detectStreamingMode(
+  events: StreamEvent[],
+  hasFinalContent: boolean,
+  isStreaming: boolean,
+): StreamingMode {
+  if (!isStreaming) return "responded";
+
+  for (let idx = events.length - 1; idx >= 0; idx -= 1) {
+    const event = events[idx];
+    const meta = (event.metadata ?? {}) as Record<string, unknown>;
+    const callKind = String(meta.call_kind ?? "");
+
+    if (event.type === "tool_call") {
+      // Tool calls inherit the active stage so the top-level status stays
+      // coherent (e.g., a rag call during explore reads as "Exploring",
+      // not generic "Tool Calling").
+      if (event.stage === "exploring") return "exploring";
+      if (event.stage === "quizzing") return "quizzing";
+      return "tool_using";
+    }
+    if (event.type === "tool_result") {
+      // Tool finished — keep scanning for the iteration's actual mode.
+      continue;
+    }
+    // Quiz pipeline emits one ``quiz_question_emitted`` content event per
+    // question with the structured qa_pair in metadata — that's the signal
+    // the quizzing phase is active.
+    if (callKind === "quiz_question_emitted") return "quizzing";
+    // Question pipeline's Tool Summarizer (Phase 1 reflection over a raw
+    // tool result) streams chunks under ``call_kind="tool_result_reflection"``.
+    // While those chunks are arriving — and until the next reasoning / tool
+    // event flips the mode again — the top-level status row reads
+    // "DeepTutor Reflecting…".
+    if (callKind === "tool_result_reflection") return "reflecting";
+    if (event.type === "content" && callKind === "llm_final_response") {
+      // Explore's FINISH streams into the chat bubble while the
+      // ``exploring`` stage is still open; keep the top-level title on
+      // "DeepTutor Exploring…" until the bus moves on.
+      if (event.stage === "exploring") return "exploring";
+      if (event.stage === "writing") return "responding";
+      if (event.stage === "reasoning") return "drafting";
+      return "responding";
+    }
+    if (callKind === "llm_planning") return "planning";
+    if (event.type === "thinking" && callKind === "llm_reasoning") {
+      if (event.stage === "exploring") return "exploring";
+      if (event.stage === "quizzing") return "quizzing";
+      return "reasoning";
+    }
+  }
+  if (hasFinalContent) return "responding";
+  return "reasoning";
+}
+
+function parsePositiveInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function getResearchTopicIndex(meta: TraceMetadata): number | null {
+  const explicit = parsePositiveInt(meta.topic_index);
+  if (explicit) return explicit;
+
+  const searchable = [meta.block_id, meta.call_id, meta.trace_id]
+    .map((value) => String(value || ""))
+    .join(" ");
+  const match = /\bblock_(\d+)\b/.exec(searchable);
+  return match ? parsePositiveInt(match[1]) : null;
+}
+
+function getDeepResearchStatusLabel(
+  events: StreamEvent[],
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  isStreaming: boolean,
+) {
+  if (!isStreaming) return null;
+
+  for (let idx = events.length - 1; idx >= 0; idx -= 1) {
+    const event = events[idx];
+    if (event.source !== "deep_research") continue;
+
+    const meta = getTraceMeta(event);
+    const key = String(meta.research_status_key || "");
+
+    if (key === "decompose_target" || event.stage === "decomposing") {
+      return t("Decomposing Target");
+    }
+
+    if (key === "research_topic" || event.stage === "researching") {
+      const topicIndex = getResearchTopicIndex(meta);
+      return topicIndex
+        ? t("Researching Topic #{{n}}", { n: topicIndex })
+        : t("Researching Topic");
+    }
+
+    if (key === "report_intro") return t("Reporting Intro");
+    if (key === "report_outline") return t("Reporting Outline");
+    if (key === "report_conclusion") return t("Reporting Conclusion");
+    if (key === "report_section") {
+      const sectionIndex = parsePositiveInt(meta.section_index);
+      return sectionIndex
+        ? t("Reporting Section #{{n}}", { n: sectionIndex })
+        : t("Reporting Section");
+    }
+
+    if (event.stage === "reporting") {
+      const label = String(meta.label || "").toLowerCase();
+      if (label.includes("intro") || label.includes("引言")) {
+        return t("Reporting Intro");
+      }
+      if (label.includes("conclusion") || label.includes("结论")) {
+        return t("Reporting Conclusion");
+      }
+      if (label.includes("section") || label.includes("章节")) {
+        const sectionIndex = parsePositiveInt(meta.section_index);
+        return sectionIndex
+          ? t("Reporting Section #{{n}}", { n: sectionIndex })
+          : t("Reporting Section");
+      }
+      return t("Reporting");
+    }
+  }
+
+  return null;
+}
+
+export function StreamingStatus({
+  events,
+  isStreaming,
+  content,
+  collapsible,
+  expanded,
+  onToggle,
+}: {
+  events: StreamEvent[];
+  isStreaming?: boolean;
+  content?: string;
+  // When set, the status row becomes a clickable toggle for the trace card
+  // sibling below. ``expanded`` controls the chevron rotation.
+  collapsible?: boolean;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
+  const { t } = useTranslation();
+  const hasFinalContent = Boolean(content && content.trim().length > 0);
+  const [nowSeconds, setNowSeconds] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!isStreaming) return;
+    const timer = window.setInterval(
+      () => setNowSeconds(Date.now() / 1000),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [isStreaming]);
+
+  // Only render once we either have a streaming turn OR a completed turn that
+  // produced visible content — empty placeholders (e.g. system message
+  // shells) shouldn't show a status row.
+  if (!isStreaming && !hasFinalContent) return null;
+  const mode = detectStreamingMode(
+    events,
+    hasFinalContent,
+    Boolean(isStreaming),
+  );
+
+  const label =
+    getDeepResearchStatusLabel(events, t, Boolean(isStreaming)) ??
+    (mode === "tool_using"
+      ? t("Tool Calling…")
+      : mode === "planning"
+        ? t("DeepTutor Planning…")
+        : mode === "drafting"
+          ? t("DeepTutor Drafting…")
+          : mode === "responding"
+            ? t("DeepTutor Responding…")
+            : mode === "exploring"
+              ? t("DeepTutor Exploring…")
+              : mode === "quizzing"
+                ? t("DeepTutor Quizzing…")
+                : mode === "reflecting"
+                  ? t("DeepTutor Reflecting…")
+                  : mode === "responded"
+                    ? t("DeepTutor responded.")
+                    : t("DeepTutor Reasoning…"));
+
+  // Single turn-level clock. Ticks every second while the turn is in
+  // flight and freezes on the final elapsed time once the answer ends —
+  // replaces the per-sub-trace duration chips that used to live inside
+  // the trace card.
+  const turnSeconds = getTurnDurationSeconds(
+    events,
+    nowSeconds,
+    Boolean(isStreaming),
+  );
+  const durationLabel =
+    turnSeconds != null ? formatTurnDuration(turnSeconds) : null;
+  // Static label after the answer is done — no breathing animation. The other
+  // three states are live so they pulse to signal ongoing work. The icon also
+  // stretches/contracts on its own cycle (out of phase with the opacity fade)
+  // so the mark feels alive rather than just dimming with the label.
+  const breathingClass = mode === "responded" ? "" : "dt-breathing-text";
+  const markPulseClass = mode === "responded" ? "" : "dt-mark-pulse";
+  const textColor =
+    mode === "responded"
+      ? "text-[var(--muted-foreground)]/70"
+      : "text-[var(--muted-foreground)]";
+  const Mark =
+    mode === "tool_using"
+      ? ToolMark
+      : mode === "responding" || mode === "drafting"
+        ? RespondingMark
+        : mode === "responded"
+          ? RespondedMark
+          : ReasoningMark;
+
+  const rowContent = (
+    <>
+      <Mark
+        size={22}
+        strokeWidth={1.5}
+        className={`${breathingClass} ${markPulseClass} shrink-0 text-[var(--primary)]/90`}
+      />
+      <span className={breathingClass}>{label}</span>
+      {durationLabel ? (
+        <span className="text-[12px] font-medium tabular-nums text-[var(--muted-foreground)]/55">
+          · {durationLabel}
+        </span>
+      ) : null}
+      {collapsible ? (
+        <ChevronDown
+          size={14}
+          strokeWidth={2}
+          className={`ml-1 shrink-0 opacity-60 transition-transform ${
+            expanded ? "" : "-rotate-90"
+          }`}
+        />
+      ) : null}
+    </>
+  );
+
+  // aria-live="polite" surfaces mode transitions to screen readers without
+  // barging in on the user.
+  if (collapsible && onToggle) {
+    return (
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded ? "true" : "false"}
+        aria-live="polite"
+        aria-atomic="false"
+        className={`mb-3 -ml-1 flex items-center gap-2.5 rounded-md px-1 py-0.5 text-[14px] font-semibold leading-none transition-colors hover:bg-[var(--muted)]/40 ${textColor}`}
+      >
+        {rowContent}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="false"
+      className={`mb-3 flex items-center gap-2.5 text-[14px] font-semibold leading-none ${textColor}`}
+    >
+      {rowContent}
+    </div>
+  );
+}
+
+/**
+ * Combined surface that renders the streaming-status row above a collapsible
+ * trace card. The chevron on the status row folds the card while leaving the
+ * status itself (and the assistant response below it) untouched. Defaults to
+ * open per product direction; user toggles persist across event updates.
+ */
+export function TraceSurface({
+  events,
+  isStreaming,
+  content,
+}: {
+  events: StreamEvent[];
+  isStreaming?: boolean;
+  content?: string;
+}) {
+  // ``hasCallTrace`` decides whether the status row gets a clickable
+  // chevron AND whether the trace panel below is mounted. We must filter
+  // out groups that CallTracePanel itself would discard — otherwise the
+  // chevron toggles a panel that's intentionally empty (final-response
+  // only, or all reasoning sub-traces absorbed into the final answer).
+  const hasCallTrace = useMemo(() => {
+    const seen = new Map<string, { hasFinal: boolean; hasAbsorbed: boolean }>();
+    for (const event of events) {
+      const meta = (event.metadata ?? {}) as Record<string, unknown>;
+      const cid = String(meta.call_id || "");
+      if (!cid) continue;
+      const entry = seen.get(cid) ?? { hasFinal: false, hasAbsorbed: false };
+      if (meta.call_kind === "llm_final_response") entry.hasFinal = true;
+      if (meta.absorbed_into_final === true) entry.hasAbsorbed = true;
+      seen.set(cid, entry);
+    }
+    for (const { hasFinal, hasAbsorbed } of seen.values()) {
+      if (!hasFinal && !hasAbsorbed) return true;
+    }
+    return false;
+  }, [events]);
+  const [expanded, setExpanded] = useState(true);
+  const toggle = useCallback(() => setExpanded((prev) => !prev), []);
+
+  return (
+    <>
+      <StreamingStatus
+        events={events}
+        isStreaming={isStreaming}
+        content={content}
+        collapsible={hasCallTrace}
+        expanded={expanded}
+        onToggle={toggle}
+      />
+      {hasCallTrace && expanded ? (
+        <CallTracePanel events={events} isStreaming={isStreaming} />
+      ) : null}
+    </>
   );
 }
 

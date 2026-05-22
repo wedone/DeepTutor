@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Brain,
   ClipboardList,
   History,
   NotebookPen,
@@ -13,8 +12,7 @@ export type SpaceItemKey =
   | "chat_history"
   | "notebooks"
   | "question_bank"
-  | "skills"
-  | "memory";
+  | "skills";
 
 export type SpaceMemoryFile = "summary" | "profile";
 
@@ -55,12 +53,5 @@ export const SPACE_ITEMS: SpaceItem[] = [
     label: "Skills",
     description: "Behavior playbooks that guide chat responses.",
     icon: Wand2,
-  },
-  {
-    key: "memory",
-    href: "/space/memory",
-    label: "Memory",
-    description: "Long-form memory the assistant carries across sessions.",
-    icon: Brain,
   },
 ];

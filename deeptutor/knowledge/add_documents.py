@@ -9,13 +9,11 @@ from datetime import datetime
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
 import shutil
 from typing import List, Optional
 
-from dotenv import load_dotenv
-
+from deeptutor.services.config import resolve_llm_runtime_config
 from deeptutor.services.rag.factory import DEFAULT_PROVIDER
 from deeptutor.services.rag.file_routing import FileTypeRouter
 from deeptutor.services.rag.index_versioning import list_kb_versions
@@ -173,14 +171,6 @@ class DocumentAdder:
         with open(self.metadata_file, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-    def extract_numbered_items_for_new_docs(
-        self, processed_files: List[Path], batch_size: int = 20
-    ) -> None:
-        """Compatibility no-op: numbered-item extraction is deprecated."""
-        _ = batch_size
-        if processed_files:
-            logger.info("Skipping numbered items extraction for incremental add (feature removed)")
-
     def update_metadata(self, added_count: int) -> None:
         """Update metadata after incremental add."""
         metadata: dict = {}
@@ -268,7 +258,6 @@ async def add_documents(
             )
             return 0
         processed = await adder.process_new_documents(new_files)
-        adder.extract_numbered_items_for_new_docs(processed)
         adder.update_metadata(len(processed))
 
         manager.update_kb_status(
@@ -308,18 +297,24 @@ async def add_documents(
 
 
 async def main() -> None:
+    try:
+        llm_config = resolve_llm_runtime_config()
+        default_api_key = llm_config.api_key
+        default_base_url = llm_config.effective_url
+    except Exception:
+        default_api_key = ""
+        default_base_url = ""
+
     parser = argparse.ArgumentParser(description="Incrementally add documents to a KB")
     parser.add_argument("kb_name", help="KB Name")
     parser.add_argument("--docs", nargs="+", help="Files")
     parser.add_argument("--docs-dir", help="Directory")
     parser.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
-    parser.add_argument("--api-key", default=os.getenv("LLM_API_KEY"))
-    parser.add_argument("--base-url", default=os.getenv("LLM_HOST"))
+    parser.add_argument("--api-key", default=default_api_key)
+    parser.add_argument("--base-url", default=default_base_url)
     parser.add_argument("--allow-duplicates", action="store_true")
 
     args = parser.parse_args()
-    load_dotenv()
-
     doc_files: list[str] = []
     if args.docs:
         doc_files.extend(args.docs)

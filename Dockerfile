@@ -111,7 +111,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8 \
     NODE_ENV=production \
-    DEEPTUTOR_IGNORE_PROCESS_ENV_OVERRIDES=1
+    DEEPTUTOR_IGNORE_PROCESS_ENV_OVERRIDES=0
 
 WORKDIR /app
 
@@ -295,11 +295,11 @@ echo "============================================"
 echo "🚀 Starting DeepTutor"
 echo "============================================"
 
-export DEEPTUTOR_IGNORE_PROCESS_ENV_OVERRIDES=1
+export DEEPTUTOR_IGNORE_PROCESS_ENV_OVERRIDES=0
 
-# Docker is JSON-driven. Ignore runtime env names even if the host or a stale
-# Compose environment provides them; the entrypoint re-exports values from
-# data/user/settings/*.json below.
+# Compose-first: environment variables from docker-compose environment:
+# take priority. JSON settings fill in any values not explicitly provided.
+# Only unset keys that were NOT provided by the user via Compose.
 for key in \
     BACKEND_PORT \
     FRONTEND_PORT \
@@ -320,7 +320,9 @@ for key in \
     POCKETBASE_EXTERNAL_URL \
     POCKETBASE_ADMIN_EMAIL \
     POCKETBASE_ADMIN_PASSWORD; do
-    unset "$key"
+    if [ -z "${!key:-}" ]; then
+        unset "$key"
+    fi
 done
 
 # Initialize user data directories if empty
@@ -337,7 +339,7 @@ eval "$(python - <<'PY'
 import shlex
 from deeptutor.services.config import export_runtime_settings_to_env
 
-for key, value in export_runtime_settings_to_env(overwrite=True).items():
+for key, value in export_runtime_settings_to_env(overwrite=False).items():
     print(f"export {key}={shlex.quote(str(value))}")
 PY
 )"

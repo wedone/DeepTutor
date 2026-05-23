@@ -24,16 +24,17 @@ primitives.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
+import logging
 from typing import Any
 
+from deeptutor.capabilities._shared import emit_capability_result
 from deeptutor.core.agentic import (
     DispatchOutcome,
-    LLMClientConfig,
     LabeledStepResult,
     LabelProtocol,
+    LLMClientConfig,
     LoopOutcome,
     UsageTracker,
     build_completion_kwargs,
@@ -43,7 +44,6 @@ from deeptutor.core.agentic import (
     run_agentic_loop,
     run_labeled_step,
 )
-from deeptutor.capabilities._shared import emit_capability_result
 from deeptutor.core.agentic.labels import find_inline_labels
 from deeptutor.core.agentic.tool_dispatch import (
     MAX_PARALLEL_TOOL_CALLS,
@@ -243,6 +243,7 @@ class SolvePipeline:
         self.base_url = getattr(self.llm_config, "base_url", None)
         self.api_version = getattr(self.llm_config, "api_version", None)
         self.extra_headers = getattr(self.llm_config, "extra_headers", None) or {}
+        self.reasoning_effort = getattr(self.llm_config, "reasoning_effort", None)
         self.client_config = LLMClientConfig(
             binding=self.binding,
             model=self.model,
@@ -250,6 +251,7 @@ class SolvePipeline:
             base_url=self.base_url,
             api_version=self.api_version,
             extra_headers=self.extra_headers or None,
+            reasoning_effort=self.reasoning_effort,
         )
 
         self.registry = get_tool_registry()
@@ -479,17 +481,13 @@ class SolvePipeline:
                     combined_text = (
                         f"{finish_text}\n\n{explanation}" if explanation else finish_text
                     )
-                    attempt_finishes.append(
-                        StepFinish(step=step, text=combined_text)
-                    )
+                    attempt_finishes.append(StepFinish(step=step, text=combined_text))
                 if not replanned:
                     step_finishes = attempt_finishes
                     break
 
         # ----- Phase 3 (synthesize) -----
-        logger.info(
-            "SolvePipeline synthesize: %d completed steps", len(step_finishes)
-        )
+        logger.info("SolvePipeline synthesize: %d completed steps", len(step_finishes))
         final_text = ""
         async with stream.stage("writing", source=SOURCE):
             final_text = await self._synthesize(
@@ -511,9 +509,7 @@ class SolvePipeline:
                 "plan_revisions": replan_count,
             },
         }
-        await emit_capability_result(
-            stream, result_payload, source=SOURCE, usage=self.usage
-        )
+        await emit_capability_result(stream, result_payload, source=SOURCE, usage=self.usage)
         return result_payload
 
     # ------------------------------------------------------------------
@@ -590,11 +586,7 @@ class SolvePipeline:
             queries = payload.get("queries", [])
         else:
             queries = []
-        cleaned = [
-            q.strip()
-            for q in queries
-            if isinstance(q, str) and q.strip()
-        ]
+        cleaned = [q.strip() for q in queries if isinstance(q, str) and q.strip()]
         return cleaned[: self.num_queries] or [question]
 
     async def _parallel_retrieve(
@@ -642,9 +634,7 @@ class SolvePipeline:
                 logger.warning("Retrieval failed for query %r: %s", query[:60], exc)
                 return {"query": query, "answer": ""}
 
-        return await asyncio.gather(
-            *[_one(q, i + 1) for i, q in enumerate(queries)]
-        )
+        return await asyncio.gather(*[_one(q, i + 1) for i, q in enumerate(queries)])
 
     async def _aggregate_retrieval_results(
         self,
@@ -722,8 +712,7 @@ class SolvePipeline:
             previous_attempt=self._render_step_finishes(previous_attempt)
             if previous_attempt
             else self._t("empty.no_previous_attempt"),
-            replan_reason=(replan_reason or "").strip()
-            or self._t("empty.no_previous_attempt"),
+            replan_reason=(replan_reason or "").strip() or self._t("empty.no_previous_attempt"),
         )
         messages = self._build_system_user_messages(
             system_prompt, user_prompt, image_attachments=image_attachments
@@ -854,11 +843,14 @@ class SolvePipeline:
     ) -> str:
         tone_key = self._tone_key(step_index, total_steps)
         tone_guidance = self._t(f"solve_step.tone.{tone_key}")
-        tool_list = self.registry.build_prompt_text(
-            self._resolved_tools(),
-            format="list_with_usage",
-            language=self.language,
-        ) or self._fallback_empty_tool_list()
+        tool_list = (
+            self.registry.build_prompt_text(
+                self._resolved_tools(),
+                format="list_with_usage",
+                language=self.language,
+            )
+            or self._fallback_empty_tool_list()
+        )
         kb_note = self._kb_system_note()
         system = self._t(
             "solve_step.system",
@@ -939,9 +931,7 @@ class SolvePipeline:
                 await self._emit_step_final(stream, step_result.text, final_meta)
                 return step_result.text, True, calls
             messages.append({"role": "assistant", "content": step_result.text[:500]})
-            messages.append(
-                {"role": "user", "content": self._t("protocol.force_finish_repair")}
-            )
+            messages.append({"role": "user", "content": self._t("protocol.force_finish_repair")})
         return self._t("protocol.fallback_final"), False, calls
 
     async def _emit_step_final(
@@ -1113,7 +1103,9 @@ class SolvePipeline:
             step_goal=step.goal,
             finish_text=finish_text,
             explain_focus=explain_focus
-            or self._t("empty.no_explain_focus", default="(no specific focus — pick the most useful angle)"),
+            or self._t(
+                "empty.no_explain_focus", default="(no specific focus — pick the most useful angle)"
+            ),
         )
         if not system_prompt or not user_prompt:
             return ""
@@ -1147,9 +1139,7 @@ class SolvePipeline:
         # AND folded into the returned text (so the persisted response /
         # downstream synthesize input keeps the same collapsible structure).
         summary_label = self._t("labels.explain_summary", default="Deep explanation")
-        summary_text = (
-            f"{summary_label}: {explain_focus}" if explain_focus else summary_label
-        )
+        summary_text = f"{summary_label}: {explain_focus}" if explain_focus else summary_label
         details_open = f"<details open>\n<summary>{summary_text}</summary>\n\n"
         details_close = "\n\n</details>"
         wrapper_meta = merge_trace_metadata(
@@ -1349,6 +1339,8 @@ class SolvePipeline:
             temperature=self._temperature,
             model=self.model,
             max_tokens=max_tokens,
+            binding=self.binding,
+            reasoning_effort=self.reasoning_effort,
         )
 
     async def _run_labeled_step(
@@ -1546,9 +1538,7 @@ class _StepLoopHost:
         # buffer is reset per step, so it never grows like chat's.
         return
 
-    def build_iteration_trace_meta(
-        self, iteration: int
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    def build_iteration_trace_meta(self, iteration: int) -> tuple[dict[str, Any], dict[str, Any]]:
         iter_call_id = new_call_id(f"solve-{self._step.id}-iter-{iteration}")
         iter_meta = build_trace_metadata(
             call_id=iter_call_id,

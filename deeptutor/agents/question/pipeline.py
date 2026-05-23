@@ -25,15 +25,14 @@ to :mod:`deeptutor.core.agentic` and the shared tool-composition policy.
 
 from __future__ import annotations
 
-import json
-import logging
-import re
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from enum import StrEnum
+import json
+import logging
+import re
 from typing import Any
 
-from deeptutor.capabilities._shared import emit_capability_result
 from deeptutor.agents._shared.tool_composition import (
     ToolMountFlags,
     compose_enabled_tools,
@@ -41,12 +40,12 @@ from deeptutor.agents._shared.tool_composition import (
     user_has_memory,
     user_has_notebooks,
 )
+from deeptutor.capabilities._shared import emit_capability_result
 from deeptutor.core.agentic import (
     DispatchOutcome,
-    LLMClientConfig,
     LabeledStepResult,
     LabelProtocol,
-    LoopOutcome,
+    LLMClientConfig,
     UsageTracker,
     build_completion_kwargs,
     build_openai_client,
@@ -139,6 +138,7 @@ FINALIZATION_REPAIR_ATTEMPTS = 2
 DEFAULT_TOOL_SUMMARIZER_MAX_TOKENS = 800
 TOOL_SUMMARIZER_TEMPERATURE = 0.2
 
+
 class QuestionType(StrEnum):
     """Canonical question-type taxonomy. Source of truth for the planner,
     quiz-step prompt schema, and the normalizer / validator below."""
@@ -191,9 +191,7 @@ def _normalize_type_list(types: list[str] | None) -> list[str]:
     return out
 
 
-def _normalize_per_type_counts(
-    counts: dict[str, int] | None, allowed: list[str]
-) -> dict[str, int]:
+def _normalize_per_type_counts(counts: dict[str, int] | None, allowed: list[str]) -> dict[str, int]:
     """Validate and clamp a per-type count map.
 
     Keys outside the canonical taxonomy — or outside ``allowed`` when
@@ -265,9 +263,7 @@ def _normalize_per_type_counts(
     """
     if not raw:
         return {}
-    accepted: frozenset[str] = (
-        frozenset(allowed_types) if allowed_types else _VALID_QUESTION_TYPES
-    )
+    accepted: frozenset[str] = frozenset(allowed_types) if allowed_types else _VALID_QUESTION_TYPES
     out: dict[str, int] = {}
     for key, value in raw.items():
         canonical = str(key or "").strip().lower()
@@ -405,6 +401,7 @@ class QuestionPipeline:
         self.llm_config = get_llm_config()
         self.binding = getattr(self.llm_config, "binding", None) or "openai"
         self.model = getattr(self.llm_config, "model", None)
+        self.reasoning_effort = getattr(self.llm_config, "reasoning_effort", None)
         self.client_config = LLMClientConfig(
             binding=self.binding,
             model=self.model,
@@ -412,6 +409,7 @@ class QuestionPipeline:
             base_url=getattr(self.llm_config, "base_url", None),
             api_version=getattr(self.llm_config, "api_version", None),
             extra_headers=getattr(self.llm_config, "extra_headers", None) or None,
+            reasoning_effort=self.reasoning_effort,
         )
 
         self.registry = get_tool_registry()
@@ -598,9 +596,7 @@ class QuestionPipeline:
         result_payload = self._build_result_payload(
             plan, qa_pairs, is_mimic=is_mimic, finish_text=finish_text
         )
-        await emit_capability_result(
-            stream, result_payload, source=SOURCE, usage=self.usage
-        )
+        await emit_capability_result(stream, result_payload, source=SOURCE, usage=self.usage)
         return result_payload
 
     # ------------------------------------------------------------------
@@ -647,8 +643,7 @@ class QuestionPipeline:
             per_type_counts=_format_per_type_counts(per_type_counts),
             difficulty=difficulty or "auto",
             attachments_summary=self._render_attachments_summary(attachments),
-            conversation_context=conversation_context
-            or self._t("empty.no_conversation"),
+            conversation_context=conversation_context or self._t("empty.no_conversation"),
             quiz_history=self._render_quiz_history(quiz_history),
         )
         messages = self._build_system_user_messages(
@@ -660,9 +655,7 @@ class QuestionPipeline:
         initial_message_count = len(messages)
 
         tool_schemas = (
-            self._build_llm_tool_schemas(context)
-            if self._use_native_tools(context)
-            else None
+            self._build_llm_tool_schemas(context) if self._use_native_tools(context) else None
         )
 
         host = _ExploreLoopHost(pipeline=self, stream=stream, context=context, client=client)
@@ -860,9 +853,7 @@ class QuestionPipeline:
         )
 
         tool_schemas = (
-            self._build_llm_tool_schemas(context)
-            if self._use_native_tools(context)
-            else None
+            self._build_llm_tool_schemas(context) if self._use_native_tools(context) else None
         )
         host = _QuizLoopHost(
             pipeline=self,
@@ -1019,8 +1010,8 @@ class QuestionPipeline:
             ),
         )
 
-        # ``build_completion_kwargs`` only returns temperature + token-limit
-        # kwargs; ``model``/``messages``/``stream`` must be added explicitly
+        # ``build_completion_kwargs`` returns generation/provider kwargs;
+        # ``model``/``messages``/``stream`` must be added explicitly
         # (mirrors how ``run_labeled_step`` composes its create call).
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -1030,6 +1021,8 @@ class QuestionPipeline:
                 temperature=TOOL_SUMMARIZER_TEMPERATURE,
                 model=self.model,
                 max_tokens=self.tool_summarizer_max_tokens,
+                binding=self.binding,
+                reasoning_effort=self.reasoning_effort,
             ),
         }
         try:
@@ -1137,9 +1130,7 @@ class QuestionPipeline:
                         raw_args = function.get("arguments") or "{}"
                         try:
                             parsed_args = json.loads(raw_args)
-                            args_display = json.dumps(
-                                parsed_args, ensure_ascii=False, indent=2
-                            )
+                            args_display = json.dumps(parsed_args, ensure_ascii=False, indent=2)
                         except Exception:
                             args_display = str(raw_args)
                         header = self._t(
@@ -1201,7 +1192,7 @@ class QuestionPipeline:
         stripped = text.lstrip()
         for label in ("``THINK``", "``TOOL``", "``FINISH``"):
             if stripped.startswith(label):
-                return stripped[len(label):].lstrip("\n").lstrip()
+                return stripped[len(label) :].lstrip("\n").lstrip()
         return text
 
     # ------------------------------------------------------------------
@@ -1363,9 +1354,7 @@ class QuestionPipeline:
         return normalized
 
     @classmethod
-    def _collect_quiz_issues(
-        cls, template: QuizTemplate, payload: dict[str, Any]
-    ) -> list[str]:
+    def _collect_quiz_issues(cls, template: QuizTemplate, payload: dict[str, Any]) -> list[str]:
         issues: list[str] = []
         question = str(payload.get("question") or "").strip()
         correct = str(payload.get("correct_answer") or "").strip()
@@ -1482,9 +1471,7 @@ class QuestionPipeline:
             ):
                 return step.text, True, calls
             messages.append({"role": "assistant", "content": step.text[:500]})
-            messages.append(
-                {"role": "user", "content": self._t("protocol.force_finish_repair")}
-            )
+            messages.append({"role": "user", "content": self._t("protocol.force_finish_repair")})
         return self._t("protocol.fallback_final"), False, calls
 
     # ------------------------------------------------------------------
@@ -1634,6 +1621,8 @@ class QuestionPipeline:
             temperature=self._temperature,
             model=self.model,
             max_tokens=max_tokens,
+            binding=self.binding,
+            reasoning_effort=self.reasoning_effort,
         )
 
     async def _run_labeled_step(
@@ -2022,9 +2011,7 @@ class _ExploreLoopHost(_BaseLoopHost):
         iteration: int,
         tool_calls: list[dict[str, Any]],
     ) -> DispatchOutcome:
-        outcome = await super().dispatch_tools(
-            iteration=iteration, tool_calls=tool_calls
-        )
+        outcome = await super().dispatch_tools(iteration=iteration, tool_calls=tool_calls)
         if not self._pipeline.tool_summarizer_enabled or not outcome.tool_messages:
             return outcome
 
@@ -2063,9 +2050,7 @@ class _ExploreLoopHost(_BaseLoopHost):
             pause_tool_call_id=outcome.pause_tool_call_id,
         )
 
-    def build_iteration_trace_meta(
-        self, iteration: int
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    def build_iteration_trace_meta(self, iteration: int) -> tuple[dict[str, Any], dict[str, Any]]:
         iter_call_id = new_call_id(f"quiz-explore-iter-{iteration}")
         iter_meta = build_trace_metadata(
             call_id=iter_call_id,
@@ -2146,9 +2131,7 @@ class _QuizLoopHost(_BaseLoopHost):
         self._template = template
         self._trace_id_prefix = f"quiz-{template.question_id}-iter"
 
-    def build_iteration_trace_meta(
-        self, iteration: int
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    def build_iteration_trace_meta(self, iteration: int) -> tuple[dict[str, Any], dict[str, Any]]:
         iter_call_id = new_call_id(f"quiz-{self._template.question_id}-iter-{iteration}")
         iter_meta = build_trace_metadata(
             call_id=iter_call_id,

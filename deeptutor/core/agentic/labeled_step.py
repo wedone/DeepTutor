@@ -32,9 +32,9 @@ Returns the resolved label, the accumulated post-label text (with provider
 from __future__ import annotations
 
 import asyncio
-import re
 from contextlib import suppress
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 from deeptutor.core.agentic.labels import (
@@ -139,6 +139,32 @@ def _is_stream_options_unsupported(exc: Exception) -> bool:
             "unsupported parameter",
             "extra inputs are not permitted",
             "unexpected keyword",
+        )
+    )
+
+
+def _is_tool_schema_unsupported(exc: Exception) -> bool:
+    """Detect providers that reject native tool/function-calling schemas."""
+    response = getattr(exc, "response", None)
+    body = (
+        getattr(exc, "body", None)
+        or getattr(exc, "doc", None)
+        or getattr(response, "text", None)
+        or getattr(exc, "message", None)
+        or str(exc)
+    )
+    text = str(body).lower()
+    return any(
+        marker in text
+        for marker in (
+            "tool",
+            "function_declaration",
+            "function declaration",
+            "function_declarations",
+            "tool_choice",
+            "parameters.properties",
+            "404_not_found",
+            "404 not_found",
         )
     )
 
@@ -444,6 +470,20 @@ async def run_labeled_step(
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("stream_options", None)
                 return await client.chat.completions.create(**retry_kwargs)
+            if tool_schemas and _is_tool_schema_unsupported(exc):
+                await stream.progress(
+                    "Provider rejected native tool schemas; retrying without tools.",
+                    source=source,
+                    stage=stage,
+                    metadata=merge_trace_metadata(
+                        iter_meta,
+                        {"trace_kind": "warning", "tool_schema_fallback": True},
+                    ),
+                )
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("tools", None)
+                retry_kwargs.pop("tool_choice", None)
+                return await client.chat.completions.create(**retry_kwargs)
             raise
 
     response_stream = await _create_response_stream()
@@ -507,9 +547,7 @@ async def run_labeled_step(
                     reasoning_text,
                     source=source,
                     stage=stage,
-                    metadata=merge_trace_metadata(
-                        iter_meta, {"trace_kind": "llm_chunk"}
-                    ),
+                    metadata=merge_trace_metadata(iter_meta, {"trace_kind": "llm_chunk"}),
                 )
 
             if delta.content:
@@ -619,9 +657,7 @@ async def run_labeled_step(
     # cleanup so downstream consumers (assistant messages, final-response
     # text) aren't polluted with the prelude markers.
     implicit_think_resolved = bool(
-        saw_pre_label_think
-        and implicit_think_label
-        and label == implicit_think_label
+        saw_pre_label_think and implicit_think_label and label == implicit_think_label
     )
     if (binding or saw_pre_label_think) and not implicit_think_resolved:
         text = clean_thinking_tags(text, binding, model)

@@ -8,11 +8,6 @@
 #   Development: python scripts/docker_compose.py -f docker-compose.yml -f docker-compose.dev.yml up
 #   Build only:  python scripts/docker_compose.py build
 #
-# Configuration priority (highest first):
-#   1. Compose environment: section below (or a .env file in this directory)
-#   2. data/user/settings/*.json (system.json, auth.json, integrations.json)
-#   3. Built-in defaults
-#
 # Prerequisites:
 #   1. Runtime settings are stored in ./data/user/settings (created automatically)
 #   2. Configure model providers from the web Settings page or model_catalog.json
@@ -66,40 +61,6 @@ services:
       - ./data/user:/app/data/user
       - ./data/memory:/app/data/memory
       - ./data/knowledge_bases:/app/data/knowledge_bases
-
-    # ============================================
-    # Runtime Environment Variables
-    # ============================================
-    # Variables set here take priority over JSON config files.
-    # Uncomment and set the values you need. All are optional —
-    # unset variables fall back to data/user/settings/*.json,
-    # then to built-in defaults.
-    # ============================================
-    environment:
-      # --- System (system.json) ---
-      # BACKEND_PORT: 8001
-      # FRONTEND_PORT: 3782
-      # NEXT_PUBLIC_API_BASE_EXTERNAL: ""
-      # NEXT_PUBLIC_API_BASE: ""
-      # CORS_ORIGIN: ""
-      # CORS_ORIGINS: ""
-      # DISABLE_SSL_VERIFY: "false"
-      # CHAT_ATTACHMENT_DIR: ""
-
-      # --- Auth (auth.json) ---
-      # AUTH_ENABLED: "false"
-      # NEXT_PUBLIC_AUTH_ENABLED: "false"
-      # AUTH_USERNAME: "admin"
-      # AUTH_PASSWORD_HASH: ""
-      # AUTH_TOKEN_EXPIRE_HOURS: "24"
-      # AUTH_COOKIE_SECURE: "false"
-
-      # --- Integrations (integrations.json) ---
-      # POCKETBASE_URL: ""
-      # POCKETBASE_PORT: "8090"
-      # POCKETBASE_EXTERNAL_URL: ""
-      # POCKETBASE_ADMIN_EMAIL: ""
-      # POCKETBASE_ADMIN_PASSWORD: ""
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${DEEPTUTOR_DOCKER_BACKEND_PORT:-8001}/"]

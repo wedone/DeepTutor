@@ -56,9 +56,25 @@ class ZulipConfig(Base):
     site: str = ""
     email: str = ""
     api_key: str = Field(default="", repr=False)
-    allow_from: list[str] = Field(default_factory=list)
+    allow_from: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Allowed user IDs or emails. "
+            'Use ["*"] to allow all. '
+            "Explicit entries also serve as heartbeat broadcast targets "
+            "(PM the first listed user)."
+        ),
+    )
     group_policy: Literal["mention", "open"] = "mention"
-    subscribe_streams: list[str] = Field(default_factory=list)
+    subscribe_streams: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Streams to subscribe the bot to. "
+            'Use ["*"] for all public streams. '
+            "Explicit stream names also serve as heartbeat broadcast targets "
+            "(post to the first listed stream)."
+        ),
+    )
     timeout: float = Field(default=60.0)
 
 
@@ -69,6 +85,28 @@ class ZulipChannel(BaseChannel):
     @classmethod
     def default_config(cls) -> dict[str, Any]:
         return ZulipConfig().model_dump(by_alias=True)
+
+    @property
+    def default_chat_id(self) -> str:
+        """Derive a default broadcast target from allow_from / subscribe_streams.
+
+        Priority:
+        - allow_from has explicit users (not '*') → PM the first user
+        - subscribe_streams has explicit streams (not '*') → post to the first stream
+        - Both are '*' or empty → no broadcast (return empty string)
+        """
+        # 1. Explicit allow_from users → PM
+        explicit_users = [u for u in self.config.allow_from if u and u.strip() and u != "*"]
+        if explicit_users:
+            return f"pm:{explicit_users[0]}"
+
+        # 2. Explicit subscribe_streams → stream message
+        explicit_streams = [s for s in self.config.subscribe_streams if s and s.strip() and s != "*"]
+        if explicit_streams:
+            return self._stream_chat_id(explicit_streams[0], "heartbeat")
+
+        # 3. Both wildcard or empty → skip broadcast
+        return ""
 
     def __init__(self, config: Any, bus: MessageBus):
         if isinstance(config, dict):
@@ -169,19 +207,46 @@ class ZulipChannel(BaseChannel):
             logger.warning("Zulip client not running")
             return
 
-        metadata = self._metadata_for_send(msg)
+        if msg.metadata.get("_tool_hint"):
+            return
 
-        if not metadata.get("_progress", False):
+        if not msg.metadata.get("msg_type"):
+            stored = self._recipient_map.get(msg.chat_id)
+            if stored:
+                msg.metadata = {**stored, **msg.metadata}
+            else:
+                # Infer metadata from chat_id prefix when no recipient_map entry (broadcast scenario)
+                if msg.chat_id.startswith("stream:"):
+                    parts = msg.chat_id.split(":", 2)
+                    if len(parts) >= 3:
+                        # NOTE: stream names containing colons will be parsed incorrectly.
+                        # This path is only used for broadcast cold-start; normal messages
+                        # use _recipient_map which stores correct metadata from the Zulip event.
+                        msg.metadata = {
+                            **msg.metadata,
+                            "msg_type": "stream",
+                            "stream": parts[1],
+                            "topic": parts[2],
+                        }
+                elif msg.chat_id.startswith("pm:"):
+                    user_id = msg.chat_id[3:]
+                    msg.metadata = {
+                        **msg.metadata,
+                        "msg_type": "private",
+                        "recipient_user_id": user_id,
+                    }
+
+        if not msg.metadata.get("_progress", False):
             self._stop_typing(msg.chat_id)
 
         try:
             for media_path in msg.media or []:
-                await self._upload_and_send(msg.chat_id, media_path, metadata)
+                await self._upload_and_send(msg.chat_id, media_path, msg.metadata)
 
             if msg.content and msg.content != "[empty message]":
                 converted = self._convert_latex_to_zulip(msg.content)
                 for chunk in split_message(converted, ZULIP_MAX_MESSAGE_LEN):
-                    await self._send_text(msg.chat_id, chunk, metadata)
+                    await self._send_text(msg.chat_id, chunk, msg.metadata)
         except Exception as e:
             logger.error("Zulip send error: {}", e)
 
@@ -779,6 +844,9 @@ class ZulipChannel(BaseChannel):
             }
         else:
             recipient = metadata.get("recipient_user_id") or metadata.get("sender_email", "")
+            # Zulip API requires integer user ID in `to` field (not string)
+            if recipient and str(recipient).isdigit():
+                recipient = int(recipient)
             return {
                 "type": "private",
                 "to": [recipient] if recipient else [],

@@ -803,6 +803,7 @@ class TutorBotManager:
                 "channels": list(cfg.channels.keys()) if cfg else [],
                 "model": cfg.model if cfg else None,
                 "llm_selection": cfg.llm_selection if cfg else None,
+                "allow_shell_exec": cfg.allow_shell_exec if cfg else None,
                 "running": False,
                 "started_at": None,
             }
@@ -994,6 +995,7 @@ class TutorBotManager:
                     channels=data.get("channels", {}),
                     model=data.get("model"),
                     llm_selection=data.get("llm_selection"),
+                    allow_shell_exec=_strict_config_bool(data.get("allow_shell_exec")),
                 )
                 await self.start_bot(bid, config)
                 logger.info("Auto-started bot '%s'", bid)

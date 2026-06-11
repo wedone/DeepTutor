@@ -8,6 +8,7 @@ import { ArrowLeft, Bot, Loader2, Send } from "lucide-react";
 import { apiFetch, apiUrl, wsUrl } from "@/lib/api";
 import { firstParam } from "@/lib/route-params";
 import AssistantResponse from "@/components/common/AssistantResponse";
+import MarkdownRenderer from "@/components/common/MarkdownRenderer";
 import { SimpleComposerInput } from "@/components/chat/home/SimpleComposerInput";
 import { downloadChatMarkdown } from "@/lib/chat-export";
 import {
@@ -313,7 +314,15 @@ export default function BotChatPage() {
             >
               {msg.role === "user" ? (
                 <div className="max-w-[80%] rounded-2xl rounded-br-md bg-[var(--primary)] px-4 py-2.5 text-[14px] text-[var(--primary-foreground)]">
-                  {msg.content}
+                  {msg.content.includes("![image](") ? (
+                    <MarkdownRenderer
+                      content={msg.content}
+                      variant="compact"
+                      className="text-[var(--primary-foreground)] [&_img]:max-h-60 [&_img]:rounded-md [&_img]:inline"
+                    />
+                  ) : (
+                    msg.content
+                  )}
                 </div>
               ) : (
                 <div className="max-w-full">

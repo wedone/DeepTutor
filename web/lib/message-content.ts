@@ -5,6 +5,7 @@ export type MessageContentItem = {
   message?: string;
   url?: string;
   alt?: string;
+  image_url?: { url?: string };
 };
 
 export type RawMessageContent = unknown;
@@ -18,6 +19,14 @@ function stringifyObject(value: Record<string, unknown>): string {
 }
 
 function normalizeObjectContent(item: Record<string, unknown>): string {
+  // 带 URL 的图片标记 → Markdown 图片语法
+  if (
+    item.type === "image" &&
+    typeof item.url === "string" &&
+    item.url
+  ) {
+    return `![image](${item.url})`;
+  }
   for (const key of ["text", "content", "message", "alt"]) {
     const value = item[key];
     if (typeof value === "string" && value) return value;

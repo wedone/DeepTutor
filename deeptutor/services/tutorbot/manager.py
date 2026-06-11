@@ -82,7 +82,11 @@ def mask_channel_secrets(channels: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_message_content(content: Any) -> str:
-    """Return a display-safe string for text or multimodal message content."""
+    """Return a display-safe string for text or multimodal message content.
+
+    对于带 URL 的图片标记 ``{"type": "image", "url": "/api/v1/..."}``，
+    输出 ``![image](url)`` 格式，前端可据此渲染为 <img>。
+    """
     if content is None:
         return ""
     if isinstance(content, str):
@@ -92,6 +96,9 @@ def normalize_message_content(content: Any) -> str:
             part for part in (normalize_message_content(item) for item in content) if part
         )
     if isinstance(content, dict):
+        # 带 URL 的图片标记 → Markdown 图片语法
+        if content.get("type") == "image" and isinstance(content.get("url"), str) and content["url"]:
+            return f"![image]({content['url']})"
         for key in ("text", "content", "message", "alt"):
             value = content.get(key)
             if isinstance(value, str) and value:

@@ -12,6 +12,23 @@ test("normalizeMessageContent joins multimodal content parts", () => {
   );
 });
 
+test("normalizeMessageContent renders image with URL as markdown", () => {
+  assert.equal(
+    normalizeMessageContent([
+      { type: "text", text: "Look at this" },
+      { type: "image", url: "/api/v1/tutorbot/media/zulip/abc_photo.jpg" },
+    ]),
+    "Look at this ![image](/api/v1/tutorbot/media/zulip/abc_photo.jpg)",
+  );
+});
+
+test("normalizeMessageContent renders image_url without URL as [image]", () => {
+  assert.equal(
+    normalizeMessageContent({ type: "image_url" }),
+    "[image]",
+  );
+});
+
 test("normalizeMessageContent renders object payloads without React-unsafe objects", () => {
   assert.equal(
     normalizeMessageContent({ type: "custom", value: 42 }),

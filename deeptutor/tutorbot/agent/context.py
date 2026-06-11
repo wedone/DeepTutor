@@ -162,6 +162,28 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         return "\n\n".join(parts) if parts else ""
 
+    @staticmethod
+    def _sanitize_history_for_llm(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """清理历史消息中 LLM 无法处理的图片标记。
+
+        Session 中保存的 ``{"type": "image", "url": "/api/v1/..."}`` 标记
+        用于前端回看，但 LLM 无法访问 API URL，需要转为 ``[image]`` 文本。
+        """
+        cleaned = []
+        for msg in history:
+            content = msg.get("content")
+            if isinstance(content, list):
+                sanitized = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "image":
+                        sanitized.append({"type": "text", "text": "[image]"})
+                    else:
+                        sanitized.append(item)
+                cleaned.append({**msg, "content": sanitized})
+            else:
+                cleaned.append(msg)
+        return cleaned
+
     def build_messages(
         self,
         history: list[dict[str, Any]],
@@ -183,9 +205,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
+        # 清理历史中的图片 URL 标记，LLM 无法访问 API 端点
+        safe_history = self._sanitize_history_for_llm(history)
+
         return [
             {"role": "system", "content": self.build_system_prompt(skill_names)},
-            *history,
+            *safe_history,
             {"role": "user", "content": merged},
         ]
 

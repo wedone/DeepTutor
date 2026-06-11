@@ -679,3 +679,43 @@ async def bot_chat_ws(ws: WebSocket, bot_id: str):
             except Exception:
                 pass
     logger.info("WebSocket closed for bot '%s'", bot_id)
+
+
+# ── Media file serving ────────────────────────────────────────
+
+
+@router.get("/media/{channel}/{file_path:path}")
+async def serve_tutorbot_media(channel: str, file_path: str):
+    """安全地提供 TutorBot 已下载的媒体文件（图片等）。
+
+    仅允许访问 data/tutorbot/media/{channel}/ 目录下的文件，
+    防止路径遍历攻击。用于在 Web 端回看会话记录时展示图片。
+    """
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    from deeptutor.tutorbot.config.paths import get_data_dir
+
+    media_root = get_data_dir() / "media"
+    # 构造目标路径并 resolve，防止 ../ 等路径遍历
+    target = (media_root / channel / file_path).resolve()
+    try:
+        target.relative_to(media_root.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied") from None
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    import mimetypes
+
+    media_type, _ = mimetypes.guess_type(target.name)
+    if not media_type:
+        media_type = "application/octet-stream"
+
+    return FileResponse(
+        path=str(target),
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )

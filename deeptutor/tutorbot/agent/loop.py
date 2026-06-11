@@ -459,7 +459,7 @@ class AgentLoop:
                 chat_id=chat_id,
             )
             final_content, _, all_msgs = await self._run_agent_loop(messages)
-            self._save_turn(session, all_msgs, 1 + len(history))
+            self._save_turn(session, all_msgs, 1 + len(history), media_paths=msg.media)
             self.sessions.save(session)
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
             return OutboundMessage(
@@ -717,7 +717,7 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
-        self._save_turn(session, all_msgs, 1 + len(history))
+        self._save_turn(session, all_msgs, 1 + len(history), media_paths=msg.media)
         self.sessions.save(session)
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
@@ -733,8 +733,34 @@ class AgentLoop:
             metadata=msg.metadata or {},
         )
 
-    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results."""
+    @staticmethod
+    def _media_url_for_path(local_path: str) -> str | None:
+        """将本地媒体路径转换为 API URL。路径需位于 tutorbot media 目录下才安全。"""
+        from deeptutor.tutorbot.config.paths import get_data_dir
+
+        media_root = get_data_dir() / "media"
+        try:
+            abs_path = Path(local_path).resolve()
+            rel = abs_path.relative_to(media_root.resolve())
+            return f"/api/v1/tutorbot/media/{rel.as_posix()}"
+        except (ValueError, OSError):
+            return None
+
+    def _save_turn(
+        self,
+        session: Session,
+        messages: list[dict],
+        skip: int,
+        media_paths: list[str] | None = None,
+    ) -> None:
+        """Save new-turn messages into session, truncating large tool results.
+
+        Args:
+            media_paths: 原始媒体文件本地路径列表，用于将 [image] 占位符
+                         替换为可回看的 API URL。
+        """
+        # 构建 image_url → API URL 的映射（按出现顺序对应）
+        img_idx = 0
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
@@ -768,7 +794,15 @@ class AgentLoop:
                         if c.get("type") == "image_url" and c.get("image_url", {}).get(
                             "url", ""
                         ).startswith("data:image/"):
-                            filtered.append({"type": "text", "text": "[image]"})
+                            # 用本地路径生成可回看的 API URL
+                            url = None
+                            if media_paths and img_idx < len(media_paths):
+                                url = self._media_url_for_path(media_paths[img_idx])
+                                img_idx += 1
+                            if url:
+                                filtered.append({"type": "image", "url": url})
+                            else:
+                                filtered.append({"type": "text", "text": "[image]"})
                         else:
                             filtered.append(c)
                     if not filtered:

@@ -695,9 +695,13 @@ async def serve_tutorbot_media(channel: str, file_path: str):
 
     from fastapi.responses import FileResponse
 
-    from deeptutor.tutorbot.config.paths import get_data_dir
+    # 使用 DEEPTUTOR_HOME 环境变量，不依赖 PathService
+    # 多用户模式下 PathService.project_root 指向用户专属路径，
+    # 而媒体文件统一存储在 data/tutorbot/media/ 共享目录
+    import os
 
-    media_root = get_data_dir() / "media"
+    root = Path(os.environ.get("DEEPTUTOR_HOME", "/home/wedo/DeepTutor"))
+    media_root = root / "data" / "tutorbot" / "media"
     # 构造目标路径并 resolve，防止 ../ 等路径遍历
     target = (media_root / channel / file_path).resolve()
     try:

@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft, Bot, Loader2, Send } from "lucide-react";
-import { apiFetch, apiUrl, wsUrl } from "@/lib/api";
+import { apiFetch, apiUrl, resolveBase, wsUrl } from "@/lib/api";
 import { firstParam } from "@/lib/route-params";
 import AssistantResponse from "@/components/common/AssistantResponse";
 import MarkdownRenderer from "@/components/common/MarkdownRenderer";
@@ -316,7 +316,10 @@ export default function BotChatPage() {
                 <div className="max-w-[80%] rounded-2xl rounded-br-md bg-[var(--primary)] px-4 py-2.5 text-[14px] text-[var(--primary-foreground)]">
                   {msg.content.includes("![image](") ? (
                     <MarkdownRenderer
-                      content={msg.content}
+                      content={msg.content.replace(
+                        /!\[image\]\(\/api\/v1\/tutorbot\/media\//g,
+                        `![image](${resolveBase()}/api/v1/tutorbot/media/`,
+                      )}
                       variant="compact"
                       className="text-[var(--primary-foreground)] [&_img]:max-h-60 [&_img]:rounded-md [&_img]:inline"
                     />

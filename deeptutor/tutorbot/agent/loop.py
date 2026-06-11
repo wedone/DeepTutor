@@ -735,15 +735,27 @@ class AgentLoop:
 
     @staticmethod
     def _media_url_for_path(local_path: str) -> str | None:
-        """将本地媒体路径转换为 API URL。路径需位于 tutorbot media 目录下才安全。"""
-        from deeptutor.tutorbot.config.paths import get_data_dir
+        """将本地媒体路径转换为 API URL。
 
-        media_root = get_data_dir() / "media"
+        从绝对路径中提取 media/{channel}/{filename} 部分，
+        不依赖 PathService（多用户模式下 project_root 指向用户专属路径）。
+        """
         try:
+            # 路径格式: .../data/tutorbot/media/{channel}/{filename}
             abs_path = Path(local_path).resolve()
-            rel = abs_path.relative_to(media_root.resolve())
-            return f"/api/v1/tutorbot/media/{rel.as_posix()}"
-        except (ValueError, OSError):
+            parts = abs_path.parts
+            # 找到 "media" 在路径中的位置
+            idx = None
+            for i, p in enumerate(parts):
+                if p == "media":
+                    idx = i
+                    break
+            if idx is not None and idx + 1 < len(parts):
+                # 取 media 之后的部分: channel/filename
+                rel = Path(*parts[idx + 1 :]).as_posix()
+                return f"/api/v1/tutorbot/media/{rel}"
+            return None
+        except Exception:
             return None
 
     def _save_turn(

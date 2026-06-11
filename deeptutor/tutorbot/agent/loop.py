@@ -737,23 +737,20 @@ class AgentLoop:
     def _media_url_for_path(local_path: str) -> str | None:
         """将本地媒体路径转换为 API URL。
 
-        从绝对路径中提取 media/{channel}/{filename} 部分，
+        从绝对路径中提取 tutorbot/media/{channel}/{filename} 部分，
         不依赖 PathService（多用户模式下 project_root 指向用户专属路径）。
+
+        路径格式预期: .../data/tutorbot/media/{channel}/{filename}
         """
         try:
-            # 路径格式: .../data/tutorbot/media/{channel}/{filename}
             abs_path = Path(local_path).resolve()
             parts = abs_path.parts
-            # 找到 "media" 在路径中的位置
-            idx = None
+            # 找到 "tutorbot/media" 连续路径段，避免误匹配其他名为 media 的目录
             for i, p in enumerate(parts):
-                if p == "media":
-                    idx = i
-                    break
-            if idx is not None and idx + 1 < len(parts):
-                # 取 media 之后的部分: channel/filename
-                rel = Path(*parts[idx + 1 :]).as_posix()
-                return f"/api/v1/tutorbot/media/{rel}"
+                if p == "tutorbot" and i + 2 < len(parts) and parts[i + 1] == "media":
+                    # 取 tutorbot/media 之后的部分: channel/filename
+                    rel = Path(*parts[i + 2 :]).as_posix()
+                    return f"/api/v1/tutorbot/media/{rel}"
             return None
         except Exception:
             return None
@@ -771,6 +768,17 @@ class AgentLoop:
             media_paths: 原始媒体文件本地路径列表，用于将 [image] 占位符
                          替换为可回看的 API URL。
         """
+        # 过滤出图片文件路径，与 _build_user_content 中的过滤逻辑保持一致
+        # 避免非图片文件导致 img_idx 索引错位
+        import mimetypes
+
+        image_paths: list[str] = []
+        if media_paths:
+            for p in media_paths:
+                mime_type, _ = mimetypes.guess_type(p)
+                if mime_type and mime_type.startswith("image/"):
+                    image_paths.append(p)
+
         # 构建 image_url → API URL 的映射（按出现顺序对应）
         img_idx = 0
         for m in messages[skip:]:
@@ -808,8 +816,8 @@ class AgentLoop:
                         ).startswith("data:image/"):
                             # 用本地路径生成可回看的 API URL
                             url = None
-                            if media_paths and img_idx < len(media_paths):
-                                url = self._media_url_for_path(media_paths[img_idx])
+                            if image_paths and img_idx < len(image_paths):
+                                url = self._media_url_for_path(image_paths[img_idx])
                                 img_idx += 1
                             if url:
                                 filtered.append({"type": "image", "url": url})

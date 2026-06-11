@@ -695,12 +695,19 @@ async def serve_tutorbot_media(channel: str, file_path: str):
 
     from fastapi.responses import FileResponse
 
-    # 使用 DEEPTUTOR_HOME 环境变量，不依赖 PathService
-    # 多用户模式下 PathService.project_root 指向用户专属路径，
-    # 而媒体文件统一存储在 data/tutorbot/media/ 共享目录
+    # 使用 DEEPTUTOR_HOME 环境变量找到共享媒体目录。
+    # 不依赖 PathService：多用户模式下 project_root 指向用户专属路径，
+    # 而媒体文件统一存储在 data/tutorbot/media/ 共享目录。
     import os
 
-    root = Path(os.environ.get("DEEPTUTOR_HOME", "/home/wedo/DeepTutor"))
+    deeptutor_home = os.environ.get("DEEPTUTOR_HOME")
+    if not deeptutor_home:
+        raise HTTPException(
+            status_code=500,
+            detail="DEEPTUTOR_HOME environment variable is not set. "
+            "Please configure it in the systemd service file or system.json.",
+        )
+    root = Path(deeptutor_home)
     media_root = root / "data" / "tutorbot" / "media"
     # 构造目标路径并 resolve，防止 ../ 等路径遍历
     target = (media_root / channel / file_path).resolve()

@@ -314,18 +314,16 @@ export default function BotChatPage() {
             >
               {msg.role === "user" ? (
                 <div className="max-w-[80%] rounded-2xl rounded-br-md bg-[var(--primary)] px-4 py-2.5 text-[14px] text-[var(--primary-foreground)]">
-                  {msg.content.includes("![image](") ? (
-                    <MarkdownRenderer
-                      content={msg.content.replace(
-                        /!\[image\]\(\/api\/v1\/tutorbot\/media\//g,
-                        `![image](${resolveBase()}/api/v1/tutorbot/media/`,
-                      )}
-                      variant="compact"
-                      className="text-[var(--primary-foreground)] [&_img]:max-h-60 [&_img]:rounded-md [&_img]:inline"
-                    />
-                  ) : (
-                    msg.content
-                  )}
+                  {/* 用户消息统一走 Markdown 渲染：支持 Markdown / LaTeX / 图片；
+                      同时把 tutorbot 媒体相对路径补全为后端绝对 URL，避免反向代理端口分离场景下走错前端端口 */}
+                  <MarkdownRenderer
+                    content={msg.content.replace(
+                      /!\[image\]\(\/api\/v1\/tutorbot\/media\//g,
+                      `![image](${resolveBase()}/api/v1/tutorbot/media/`,
+                    )}
+                    variant="compact"
+                    className="text-[var(--primary-foreground)] [&_img]:max-h-60 [&_img]:rounded-md [&_img]:inline"
+                  />
                 </div>
               ) : (
                 <div className="max-w-full">

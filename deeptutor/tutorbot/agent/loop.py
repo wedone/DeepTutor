@@ -737,22 +737,19 @@ class AgentLoop:
     def _media_url_for_path(local_path: str) -> str | None:
         """将本地媒体路径转换为 API URL。
 
-        从绝对路径中提取 tutorbot/media/{channel}/{filename} 部分，
-        不依赖 PathService（多用户模式下 project_root 指向用户专属路径）。
-
-        路径格式预期: .../data/tutorbot/media/{channel}/{filename}
+        tutorbot 通道在接收消息时不绑定用户上下文，所有图片统一写入
+        默认 PathService（即 ``$DEEPTUTOR_HOME/data/tutorbot/media/{channel}/...``），
+        与单/多用户模式无关。这里也必须使用同一份默认 PathService，
+        而不是 ``get_path_service()``（后者在多用户请求线程会指向用户专属路径）。
         """
         try:
+            from deeptutor.services.path_service import PathService
+
+            media_root = (PathService.get_instance().project_root / "data" / "tutorbot" / "media").resolve()
             abs_path = Path(local_path).resolve()
-            parts = abs_path.parts
-            # 找到 "tutorbot/media" 连续路径段，避免误匹配其他名为 media 的目录
-            for i, p in enumerate(parts):
-                if p == "tutorbot" and i + 2 < len(parts) and parts[i + 1] == "media":
-                    # 取 tutorbot/media 之后的部分: channel/filename
-                    rel = Path(*parts[i + 2 :]).as_posix()
-                    return f"/api/v1/tutorbot/media/{rel}"
-            return None
-        except Exception:
+            rel = abs_path.relative_to(media_root)
+            return f"/api/v1/tutorbot/media/{rel.as_posix()}"
+        except (ValueError, Exception):
             return None
 
     def _save_turn(

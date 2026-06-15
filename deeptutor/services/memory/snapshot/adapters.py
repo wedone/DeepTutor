@@ -16,7 +16,9 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+from pathlib import Path
 import sqlite3
+from typing import Any
 
 from deeptutor.services.memory.paths import Surface
 from deeptutor.services.memory.snapshot.entity import Entity
@@ -357,6 +359,91 @@ def read_chat_entities() -> list[Entity]:
     return out
 
 
+def read_partner_entities() -> list[Entity]:
+    """扫描所有 partner 的 sessions/*.jsonl，将每个 session 转为一个 Entity。
+
+    Partner 会话存储在 ``data/[user|users/<uid>]/partners/<id>/sessions/``
+    下的 JSONL 文件中，每行一条消息记录。此 adapter 读取所有 partner
+    的 session 文件，将每个 session 的对话内容组装为一个 Entity，
+    供 L2 consolidator 消费。
+    """
+    from deeptutor.multi_user.paths import USERS_ROOT
+    from deeptutor.partners.config.paths import _admin_base_dir, _base_dir_for_owner
+
+    out: list[Entity] = []
+
+    # 收集所有 partner 目录（admin + 各用户）
+    partner_dirs: list[Path] = []
+    admin_dir = _admin_base_dir()
+    if admin_dir.exists():
+        for entry in admin_dir.iterdir():
+            if entry.is_dir() and (entry / "config.yaml").exists():
+                partner_dirs.append(entry)
+    if USERS_ROOT.exists():
+        for user_dir in USERS_ROOT.iterdir():
+            if not user_dir.is_dir():
+                continue
+            user_partners = _base_dir_for_owner(user_dir.name)
+            if user_partners.exists():
+                for entry in user_partners.iterdir():
+                    if entry.is_dir() and (entry / "config.yaml").exists():
+                        partner_dirs.append(entry)
+
+    for partner_dir in partner_dirs:
+        partner_id = partner_dir.name
+        sessions_dir = partner_dir / "sessions"
+        if not sessions_dir.is_dir():
+            continue
+        for session_file in sorted(sessions_dir.glob("*.jsonl")):
+            session_key = session_file.stem
+            if session_key.startswith("_archived_"):
+                continue
+            records: list[dict[str, Any]] = []
+            try:
+                with session_file.open("r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(data, dict) and data.get("role") and data.get("content"):
+                            records.append(data)
+            except OSError:
+                continue
+            if not records:
+                continue
+
+            blocks: list[str] = []
+            for r in records:
+                role = r.get("role", "")
+                body = str(r.get("content", "")).strip()
+                if not body:
+                    continue
+                blocks.append(f"### {role}\n{body}")
+            content = "\n\n".join(blocks)
+
+            last_ts = records[-1].get("timestamp", "") if records else ""
+            entity_id = f"{partner_id}:{session_key}"
+            out.append(
+                Entity(
+                    id=entity_id,
+                    label=f"[{partner_id}] {session_key}",
+                    ts=_iso(last_ts),
+                    content=content,
+                    metadata={
+                        "partner_id": partner_id,
+                        "session_key": session_key,
+                        "message_count": len(records),
+                    },
+                    fingerprint=_sha1(content, last_ts),
+                )
+            )
+    return out
+
+
 def read_quiz_entities() -> list[Entity]:
     """One Entity per recorded quiz attempt (notebook_entries row)."""
     db_path = get_path_service().get_chat_history_db()
@@ -426,6 +513,7 @@ _READERS = {
     "kb": read_kb_entities,
     "chat": read_chat_entities,
     "quiz": read_quiz_entities,
+    "partner": read_partner_entities,
 }
 
 

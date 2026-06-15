@@ -172,7 +172,53 @@ class PartnerRunner:
             )
             if final:
                 self.store.append(session_key, "assistant", final, channel=msg.channel)
+
+            # 将 turn 写入 memory L1 trace（partner surface）
+            await self._emit_memory_trace(session_key, msg, final)
+
             return final
+
+    async def _emit_memory_trace(
+        self,
+        session_key: str,
+        msg: InboundMessage,
+        reply: str,
+    ) -> None:
+        """将 partner turn 写入 memory L1 trace（partner surface）。
+
+        必须在 partner scope 内调用，确保 trace 文件写入 partner workspace
+        的 memory 目录。
+        """
+        try:
+            from deeptutor.services.memory.store import MemoryStore
+            from deeptutor.services.memory.trace import TraceEvent
+
+            turn_id = f"partner-{self.partner_id}-{uuid.uuid4().hex[:12]}"
+            payload: dict[str, Any] = {
+                "action": "turn",
+                "partner_id": self.partner_id,
+                "session_key": session_key,
+                "channel": msg.channel,
+                "chat_id": msg.chat_id,
+                "sender_id": msg.sender_id,
+                "user_message": msg.content,
+            }
+            if reply:
+                payload["assistant_message"] = reply
+
+            with user_context(partner_user(self.partner_id, name=self.config.name)):
+                evt = TraceEvent.new(
+                    surface="partner",
+                    kind="turn",
+                    payload=payload,
+                    session_id=session_key,
+                    turn_id=turn_id,
+                )
+                await MemoryStore().emit(evt)
+        except Exception:
+            logger.warning(
+                "Partner %s memory trace emit failed", self.partner_id, exc_info=True
+            )
 
     async def _run_turn(
         self,

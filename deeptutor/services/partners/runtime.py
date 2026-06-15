@@ -186,10 +186,12 @@ class PartnerRunner:
     ) -> None:
         """将 partner turn 写入 memory L1 trace（partner surface）。
 
-        必须在 partner scope 内调用，确保 trace 文件写入 partner workspace
-        的 memory 目录。
+        使用 admin scope 写入，确保 trace 文件写入全局 memory 目录
+        （与其他 surface 的 trace 在同一位置），便于 L2 consolidator 统一读取。
         """
         try:
+            from deeptutor.multi_user.models import CurrentUser, UserScope
+            from deeptutor.multi_user.paths import get_admin_path_service, user_context
             from deeptutor.services.memory.store import MemoryStore
             from deeptutor.services.memory.trace import TraceEvent
 
@@ -206,7 +208,19 @@ class PartnerRunner:
             if reply:
                 payload["assistant_message"] = reply
 
-            with user_context(partner_user(self.partner_id, name=self.config.name)):
+            # 使用 admin scope 写入全局 memory 目录
+            admin_scope = UserScope(
+                kind="admin",
+                user_id="local-admin",
+                root=get_admin_path_service().workspace_root,
+            )
+            admin_user = CurrentUser(
+                id="local-admin",
+                username="local",
+                role="admin",
+                scope=admin_scope,
+            )
+            with user_context(admin_user):
                 evt = TraceEvent.new(
                     surface="partner",
                     kind="turn",

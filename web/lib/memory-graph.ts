@@ -11,6 +11,7 @@ export type Surface =
   | "kb"
   | "book"
   | "tutorbot"
+  | "partner"
   | "cowriter";
 
 export const SURFACES: Surface[] = [
@@ -20,6 +21,7 @@ export const SURFACES: Surface[] = [
   "kb",
   "book",
   "tutorbot",
+  "partner",
   "cowriter",
 ];
 

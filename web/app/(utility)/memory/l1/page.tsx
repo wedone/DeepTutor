@@ -12,6 +12,7 @@ type Surface =
   | "kb"
   | "book"
   | "tutorbot"
+  | "partner"
   | "cowriter";
 
 const VALID_SURFACES: ReadonlySet<Surface> = new Set([
@@ -21,6 +22,7 @@ const VALID_SURFACES: ReadonlySet<Surface> = new Set([
   "kb",
   "book",
   "tutorbot",
+  "partner",
   "cowriter",
 ]);
 

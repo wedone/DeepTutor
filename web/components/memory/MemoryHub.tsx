@@ -43,6 +43,7 @@ const SURFACES = [
   "kb",
   "book",
   "tutorbot",
+  "partner",
   "cowriter",
 ] as const;
 

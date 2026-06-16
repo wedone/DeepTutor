@@ -22,6 +22,9 @@ surfaces:
   cowriter:
     focus: "写作风格偏好、反复修改的模式、用户起草的话题。"
     sections: ["风格", "反复修改", "话题"]
+  partner:
+    focus: "与 partner 对话中反复出现的主题、用户偏好的交互模式、以及 partner 帮助用户解决的典型问题。"
+    sections: ["主题", "交互模式", "典型问题"]
 
 slots:
   recent:

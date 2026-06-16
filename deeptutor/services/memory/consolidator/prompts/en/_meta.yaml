@@ -23,6 +23,9 @@ surfaces:
   cowriter:
     focus: "Writing style preferences, recurring revisions, and topics the user drafts about."
     sections: ["Style", "Recurring revisions", "Topics"]
+  partner:
+    focus: "Recurring themes in partner conversations, preferred interaction patterns, and typical problems the partner helps the user solve."
+    sections: ["Themes", "Interaction patterns", "Typical problems"]
 
 slots:
   recent:

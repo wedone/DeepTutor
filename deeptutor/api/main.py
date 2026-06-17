@@ -326,9 +326,10 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 from deeptutor.api.routers.auth import require_admin, require_auth  # noqa: E402
 
 _auth = [Depends(require_auth)]
-# Partner data is anchored at the admin workspace (data/partners) and shared
-# process-wide, so management is admin-gated in multi-user deployments
-# (single-user local runs are implicitly admin — no behaviour change there).
+# Partner 数据锚定在 admin workspace（data/partners）并进程内共享。
+# 权限已降级为 require_auth（登录即可访问），细粒度 ownership 校验在
+# partners 路由内部完成（_check_partner_owner）；/souls/* 仍显式 require_admin。
+# 单机模式（AUTH_ENABLED=false）下 require_auth 为 no-op，行为不变。
 _admin = [Depends(require_admin)]
 
 app.include_router(
@@ -404,7 +405,7 @@ app.include_router(
     agent_config.router, prefix="/api/v1/agent-config", tags=["agent-config"], dependencies=_auth
 )
 app.include_router(
-    partners.router, prefix="/api/v1/partners", tags=["partners"], dependencies=_admin
+    partners.router, prefix="/api/v1/partners", tags=["partners"], dependencies=_auth
 )
 app.include_router(
     attachments.router,

@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,7 +17,7 @@ from pydantic import Field
 from deeptutor.partners.bus.events import OutboundMessage
 from deeptutor.partners.bus.queue import MessageBus
 from deeptutor.partners.channels.base import BaseChannel
-from deeptutor.partners.config.paths import get_runtime_subdir
+from deeptutor.partners.config.paths import get_partner_runtime_subdir
 from deeptutor.partners.config.schema import Base, DeliveryOverrides
 
 try:
@@ -293,9 +294,10 @@ class MochatChannel(BaseChannel):
         self._socket: Any = None
         self._ws_connected = self._ws_ready = False
 
-        self._state_dir = get_runtime_subdir("mochat")
-        self._cursor_path = self._state_dir / "session_cursors.json"
+        # cursor 路径改为 property 延迟计算：partner_id 在 __init__ 之后由
+        # PartnerManager._build_channel_manager 注入，此时才能解析正确路径。
         self._session_cursor: dict[str, int] = {}
+        self._cursor_initialized = False
         self._cursor_save_task: asyncio.Task | None = None
 
         self._session_set: set[str] = set()
@@ -315,6 +317,34 @@ class MochatChannel(BaseChannel):
         self._refresh_task: asyncio.Task | None = None
         self._target_locks: dict[str, asyncio.Lock] = {}
 
+    # ---- state path（partner_id 注入后才能解析正确路径）------------------
+
+    @property
+    def _state_dir(self) -> Path:
+        return get_partner_runtime_subdir(self.partner_id, "mochat", owner_id=self.owner_id)
+
+    @property
+    def _cursor_path(self) -> Path:
+        return self._state_dir / "session_cursors.json"
+
+    def _ensure_cursor_initialized(self) -> None:
+        """延迟加载 cursor（partner_id 注入后才能解析正确路径）。"""
+        if self._cursor_initialized:
+            return
+        self._cursor_initialized = True
+        if not self._cursor_path.exists():
+            return
+        try:
+            data = json.loads(self._cursor_path.read_text("utf-8"))
+        except Exception as e:
+            logger.warning("Failed to read Mochat cursor file: {}", e)
+            return
+        cursors = data.get("cursors") if isinstance(data, dict) else None
+        if isinstance(cursors, dict):
+            for sid, cur in cursors.items():
+                if isinstance(sid, str) and isinstance(cur, int) and cur >= 0:
+                    self._session_cursor[sid] = cur
+
     # ---- lifecycle ---------------------------------------------------------
 
     async def start(self) -> None:
@@ -325,8 +355,8 @@ class MochatChannel(BaseChannel):
 
         self._running = True
         self._http = httpx.AsyncClient(timeout=30.0)
-        self._state_dir.mkdir(parents=True, exist_ok=True)
-        await self._load_session_cursors()
+        # partner_id 已由 _build_channel_manager 注入，加载 cursor 状态文件
+        self._ensure_cursor_initialized()
         self._seed_targets_from_config()
         await self._refresh_targets(subscribe_new=False)
 

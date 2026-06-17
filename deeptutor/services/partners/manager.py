@@ -585,6 +585,10 @@ class PartnerManager:
             partner_id,
             list(manager.channels.keys()),
         )
+        # 注入 partner_id / owner_id 到各 channel 实例，使媒体/状态文件按 partner 隔离
+        for ch in manager.channels.values():
+            ch.partner_id = partner_id
+            ch.owner_id = getattr(config, "owner_id", "") or ""
         return manager
 
     async def reload_channels(self, partner_id: str) -> None:

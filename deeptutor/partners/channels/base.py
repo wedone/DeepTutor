@@ -43,6 +43,10 @@ class BaseChannel(ABC):
         self.config = config
         self.bus = bus
         self._running = False
+        # partner_id / owner_id 由 PartnerManager._build_channel_manager
+        # 在创建后注入；空串表示无 partner 上下文，走 admin 路径。
+        self.partner_id: str = ""
+        self.owner_id: str = ""
 
     async def transcribe_audio(self, file_path: str | Path) -> str:
         """Transcribe an audio file via Groq Whisper. Returns empty string on failure."""

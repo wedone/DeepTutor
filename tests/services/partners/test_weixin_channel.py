@@ -29,7 +29,9 @@ from deeptutor.partners.channels.weixin import (
 def state_dir(tmp_path, monkeypatch):
     """Redirect default Weixin runtime state to a temp directory."""
 
-    monkeypatch.setattr(weixin_mod, "get_runtime_subdir", lambda name: tmp_path / name)
+    monkeypatch.setattr(
+        weixin_mod, "get_partner_runtime_subdir", lambda partner_id, name, **kw: tmp_path / name
+    )
     return tmp_path / "weixin"
 
 

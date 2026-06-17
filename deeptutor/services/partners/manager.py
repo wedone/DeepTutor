@@ -134,6 +134,9 @@ class PartnerConfig:
     builtin_tools: list[str] | None = None
     # Configured MCP tools the partner may load. None = all; [] = MCP off.
     mcp_tools: list[str] | None = None
+    # 多用户隔离：partner 所属 owner 的 user_id。空串表示 admin（兼容单机模式）。
+    # 不参与 merge_config（_MERGEABLE_FIELDS 不含 owner_id），由创建时确定。
+    owner_id: str = ""
 
 
 @dataclass
@@ -237,6 +240,7 @@ class PartnerInstance:
             "enabled_tools": self.config.enabled_tools,
             "builtin_tools": self.config.builtin_tools,
             "mcp_tools": self.config.mcp_tools,
+            "owner_id": self.config.owner_id,
             "running": self.running,
             "started_at": self.started_at.isoformat(),
             "last_reload_error": self.last_reload_error,
@@ -257,22 +261,23 @@ class PartnerManager:
     def _partners_dir(self) -> Path:
         return get_data_dir()
 
-    def _partner_dir(self, partner_id: str) -> Path:
-        return self._partners_dir / partner_id
+    def _partner_dir(self, partner_id: str, *, owner_id: str = "") -> Path:
+        return get_partner_dir(partner_id, owner_id=owner_id)
 
-    def session_store(self, partner_id: str) -> PartnerSessionStore:
-        store = self._stores.get(partner_id)
+    def session_store(self, partner_id: str, *, owner_id: str = "") -> PartnerSessionStore:
+        cache_key = f"{owner_id}:{partner_id}"
+        store = self._stores.get(cache_key)
         if store is None:
-            store = PartnerSessionStore(get_partner_sessions_dir(partner_id))
-            self._stores[partner_id] = store
+            store = PartnerSessionStore(get_partner_sessions_dir(partner_id, owner_id=owner_id))
+            self._stores[cache_key] = store
         return store
 
-    def _ensure_partner_dirs(self, partner_id: str) -> None:
-        get_partner_dir(partner_id)
-        ensure_partner_workspace(partner_id)
-        get_partner_sessions_dir(partner_id)
-        if not read_soul(partner_id).strip():
-            write_soul(partner_id, DEFAULT_SOUL)
+    def _ensure_partner_dirs(self, partner_id: str, *, owner_id: str = "") -> None:
+        get_partner_dir(partner_id, owner_id=owner_id)
+        ensure_partner_workspace(partner_id, owner_id=owner_id)
+        get_partner_sessions_dir(partner_id, owner_id=owner_id)
+        if not read_soul(partner_id, owner_id=owner_id).strip():
+            write_soul(partner_id, DEFAULT_SOUL, owner_id=owner_id)
 
     # ── Config persistence ────────────────────────────────────────
 
@@ -296,8 +301,10 @@ class PartnerManager:
         "mcp_tools",
     )
 
-    def load_config(self, partner_id: str) -> PartnerConfig | None:
-        path = self._partner_dir(partner_id) / "config.yaml"
+    def load_config(
+        self, partner_id: str, *, owner_id: str = ""
+    ) -> PartnerConfig | None:
+        path = self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml"
         if not path.exists():
             return None
         try:
@@ -317,13 +324,19 @@ class PartnerManager:
                 enabled_tools=_optional_str_list(data.get("enabled_tools")),
                 builtin_tools=_optional_str_list(data.get("builtin_tools")),
                 mcp_tools=_optional_str_list(data.get("mcp_tools")),
+                owner_id=str(data.get("owner_id", "") or ""),
             )
         except Exception:
             logger.exception("Failed to load partner config %s", partner_id)
             return None
 
     def save_config(
-        self, partner_id: str, config: PartnerConfig, *, auto_start: bool | None = None
+        self,
+        partner_id: str,
+        config: PartnerConfig,
+        *,
+        auto_start: bool | None = None,
+        owner_id: str = "",
     ) -> None:
         """Persist atomically (write-temp + replace).
 
@@ -331,10 +344,16 @@ class PartnerManager:
         managed separately from config fields (same contract as TutorBot —
         ``None`` preserves the on-disk value; a brand-new partner defaults to
         ``True``)."""
-        partner_dir = self._partner_dir(partner_id)
+        # 优先使用 config.owner_id：若 config 已设 owner 而传入 owner_id 为空，以 config 为准
+        effective_owner = config.owner_id or owner_id
+        partner_dir = self._partner_dir(partner_id, owner_id=effective_owner)
         path = partner_dir / "config.yaml"
         if auto_start is None:
-            auto_start = self._load_auto_start(partner_id, default=False) if path.exists() else True
+            auto_start = (
+                self._load_auto_start(partner_id, default=False, owner_id=effective_owner)
+                if path.exists()
+                else True
+            )
         partner_dir.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {
             "name": config.name,
@@ -346,6 +365,7 @@ class PartnerManager:
             "avatar": config.avatar,
             "soul_origin": config.soul_origin,
             "auto_start": auto_start,
+            "owner_id": config.owner_id,
         }
         if config.llm_selection:
             data["llm_selection"] = config.llm_selection
@@ -364,8 +384,10 @@ class PartnerManager:
         tmp_path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
         tmp_path.replace(path)
 
-    def _load_auto_start(self, partner_id: str, *, default: bool = False) -> bool:
-        path = self._partner_dir(partner_id) / "config.yaml"
+    def _load_auto_start(
+        self, partner_id: str, *, default: bool = False, owner_id: str = ""
+    ) -> bool:
+        path = self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml"
         if not path.exists():
             return default
         try:
@@ -375,9 +397,11 @@ class PartnerManager:
             logger.exception("Failed to load auto_start flag for partner '%s'", partner_id)
             return default
 
-    def auto_start_enabled(self, partner_id: str, *, default: bool = False) -> bool:
+    def auto_start_enabled(
+        self, partner_id: str, *, default: bool = False, owner_id: str = ""
+    ) -> bool:
         """Return whether this partner is allowed to start without an explicit user action."""
-        return self._load_auto_start(partner_id, default=default)
+        return self._load_auto_start(partner_id, default=default, owner_id=owner_id)
 
     def merge_config(self, partner_id: str, overrides: dict[str, Any]) -> PartnerConfig:
         """Overlay non-``None`` overrides onto the on-disk config.
@@ -394,23 +418,30 @@ class PartnerManager:
     # ── Lifecycle ─────────────────────────────────────────────────
 
     async def start_partner(
-        self, partner_id: str, config: PartnerConfig | None = None
+        self,
+        partner_id: str,
+        config: PartnerConfig | None = None,
+        *,
+        owner_id: str = "",
     ) -> PartnerInstance:
         if partner_id in self._partners and self._partners[partner_id].running:
             return self._partners[partner_id]
 
-        self._ensure_partner_dirs(partner_id)
+        if config is None:
+            config = self.load_config(partner_id, owner_id=owner_id)
+        # effective_owner：优先 config.owner_id，其次传入的 owner_id
+        effective_owner = (config.owner_id if config else "") or owner_id
+
+        self._ensure_partner_dirs(partner_id, owner_id=effective_owner)
 
         if config is None:
-            config = self.load_config(partner_id)
-        if config is None:
-            config = PartnerConfig(name=partner_id)
-            self.save_config(partner_id, config)
+            config = PartnerConfig(name=partner_id, owner_id=effective_owner)
+            self.save_config(partner_id, config, owner_id=effective_owner)
 
         from deeptutor.partners.bus.queue import MessageBus
 
         bus = MessageBus()
-        store = self.session_store(partner_id)
+        store = self.session_store(partner_id, owner_id=effective_owner)
         runner = PartnerRunner(partner_id, config, bus, store, save_config=self.save_config)
 
         try:
@@ -443,7 +474,7 @@ class PartnerManager:
         # Omit auto_start so save_config preserves the persisted intent: a
         # lazy start (web chat) of an auto_start:false partner must not
         # silently re-enable auto-start.
-        self.save_config(partner_id, config)
+        self.save_config(partner_id, config, owner_id=effective_owner)
         logger.info("Partner '%s' started", partner_id)
         return instance
 
@@ -493,7 +524,9 @@ class PartnerManager:
         except Exception:
             logger.exception("Outbound router failed for partner %s", partner_id)
 
-    async def stop_partner(self, partner_id: str, *, preserve_auto_start: bool = False) -> bool:
+    async def stop_partner(
+        self, partner_id: str, *, preserve_auto_start: bool = False, owner_id: str = ""
+    ) -> bool:
         """Stop a running partner.
 
         Manual stops disable future auto-starts; process shutdown preserves
@@ -501,8 +534,12 @@ class PartnerManager:
         instance = self._partners.get(partner_id)
         if not instance:
             return False
+        # 从 instance 读取 effective_owner（instance.config 已含 owner_id）
+        effective_owner = instance.config.owner_id or owner_id
         auto_start = (
-            self._load_auto_start(partner_id, default=True) if preserve_auto_start else False
+            self._load_auto_start(partner_id, default=True, owner_id=effective_owner)
+            if preserve_auto_start
+            else False
         )
 
         for task in instance.tasks:
@@ -520,7 +557,7 @@ class PartnerManager:
             except Exception:
                 logger.exception("Error stopping channels for partner '%s'", partner_id)
 
-        self.save_config(partner_id, instance.config, auto_start=auto_start)
+        self.save_config(partner_id, instance.config, auto_start=auto_start, owner_id=effective_owner)
         del self._partners[partner_id]
         logger.info("Partner '%s' stopped (auto_start=%s)", partner_id, auto_start)
         return True
@@ -621,27 +658,65 @@ class PartnerManager:
 
     def _discover_partner_ids(self) -> set[str]:
         self._migrate_legacy_tutorbot()
+        from deeptutor.multi_user.paths import ADMIN_WORKSPACE_ROOT, USERS_ROOT
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
         ids: set[str] = set()
-        if not self._partners_dir.exists():
-            return ids
-        for entry in self._partners_dir.iterdir():
-            if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
-                continue
-            if entry.is_dir() and (entry / "config.yaml").exists():
-                ids.add(entry.name)
+        # admin 目录（owner_id == ""）
+        admin_partners = ADMIN_WORKSPACE_ROOT / "partners"
+        if admin_partners.is_dir():
+            for entry in admin_partners.iterdir():
+                if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
+                    continue
+                if entry.is_dir() and (entry / "config.yaml").exists():
+                    ids.add(entry.name)
+        # 各用户目录（owner_id == user_entry.name）
+        if USERS_ROOT.is_dir():
+            for user_entry in USERS_ROOT.iterdir():
+                if not user_entry.is_dir():
+                    continue
+                user_partners = user_entry / "partners"
+                if not user_partners.is_dir():
+                    continue
+                for entry in user_partners.iterdir():
+                    if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
+                        continue
+                    if entry.is_dir() and (entry / "config.yaml").exists():
+                        ids.add(entry.name)
+        # 发现后失效缓存，确保后续 _resolve_owner_id 重新扫描
+        invalidate_owner_cache()
         return ids
 
-    def list_partners(self) -> list[dict[str, Any]]:
-        """All known partners (running + configured on disk); channels keys-only."""
+    def list_partners(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
+        """All known partners (running + configured on disk); channels keys-only.
+
+        ``owner_id`` 过滤：
+        * ``None`` → 返回全部（兼容旧调用）；
+        * ``""`` → 只返回 admin 拥有的 partner（config.owner_id == ""）；
+        * 非空 → 只返回该 owner 拥有的 partner（config.owner_id == owner_id）。
+        """
+        from deeptutor.partners.config.paths import resolve_owner_for_partner
+
         result: dict[str, dict[str, Any]] = {}
 
+        def _matches(cfg_owner: str) -> bool:
+            if owner_id is None:
+                return True
+            return cfg_owner == owner_id
+
         for inst in self._partners.values():
+            if not _matches(inst.config.owner_id):
+                continue
             result[inst.partner_id] = inst.to_dict()
 
         for pid in self._discover_partner_ids():
             if pid in result:
                 continue
-            cfg = self.load_config(pid)
+            # 反查 owner 以正确定位 config.yaml 并过滤
+            owner = resolve_owner_for_partner(pid)
+            if owner_id is not None and owner != owner_id:
+                continue
+            cfg = self.load_config(pid, owner_id=owner)
             result[pid] = {
                 "partner_id": pid,
                 "name": cfg.name if cfg else pid,
@@ -658,6 +733,7 @@ class PartnerManager:
                 "enabled_tools": cfg.enabled_tools if cfg else None,
                 "builtin_tools": cfg.builtin_tools if cfg else None,
                 "mcp_tools": cfg.mcp_tools if cfg else None,
+                "owner_id": cfg.owner_id if cfg else owner,
                 "running": False,
                 "started_at": None,
             }
@@ -667,8 +743,8 @@ class PartnerManager:
     def get_partner(self, partner_id: str) -> PartnerInstance | None:
         return self._partners.get(partner_id)
 
-    def partner_exists(self, partner_id: str) -> bool:
-        return (self._partner_dir(partner_id) / "config.yaml").exists()
+    def partner_exists(self, partner_id: str, *, owner_id: str = "") -> bool:
+        return (self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml").exists()
 
     @staticmethod
     def web_session_key(
@@ -691,13 +767,16 @@ class PartnerManager:
         return store.merged_messages(limit=limit)
 
     def get_recent_active_partners(self, limit: int = 3) -> list[dict[str, Any]]:
+        from deeptutor.partners.config.paths import resolve_owner_for_partner
+
         activity: list[tuple[str, dict[str, Any]]] = []
         for pid in self._discover_partner_ids():
-            sessions = self.session_store(pid).list_sessions()
+            owner = resolve_owner_for_partner(pid)
+            sessions = self.session_store(pid, owner_id=owner).list_sessions()
             if not sessions:
                 continue
             newest = sessions[0]
-            cfg = self.load_config(pid)
+            cfg = self.load_config(pid, owner_id=owner)
             instance = self._partners.get(pid)
             activity.append(
                 (
@@ -859,17 +938,20 @@ class PartnerManager:
     # ── Boot / shutdown ───────────────────────────────────────────
 
     async def auto_start_partners(self) -> None:
+        from deeptutor.partners.config.paths import resolve_owner_for_partner
+
         for pid in self._discover_partner_ids():
             if pid in self._partners and self._partners[pid].running:
                 continue
             try:
-                if not self._load_auto_start(pid, default=False):
+                owner = resolve_owner_for_partner(pid)
+                if not self._load_auto_start(pid, default=False, owner_id=owner):
                     continue
-                config = self.load_config(pid)
+                config = self.load_config(pid, owner_id=owner)
                 if config is None:
                     continue
-                await self.start_partner(pid, config)
-                logger.info("Auto-started partner '%s'", pid)
+                await self.start_partner(pid, config, owner_id=owner)
+                logger.info("Auto-started partner '%s' (owner='%s')", pid, owner)
             except Exception:
                 logger.exception("Failed to auto-start partner '%s'", pid)
 
@@ -877,19 +959,23 @@ class PartnerManager:
         for partner_id in list(self._partners.keys()):
             await self.stop_partner(partner_id, preserve_auto_start=preserve_auto_start)
 
-    async def destroy_partner(self, partner_id: str) -> bool:
-        await self.stop_partner(partner_id, preserve_auto_start=False)
-        self._stores.pop(partner_id, None)
+    async def destroy_partner(self, partner_id: str, *, owner_id: str = "") -> bool:
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
+        await self.stop_partner(partner_id, preserve_auto_start=False, owner_id=owner_id)
+        self._stores.pop(f"{owner_id}:{partner_id}", None)
         try:
             from deeptutor.services.cron import get_cron_service
 
             get_cron_service().remove_owner_jobs(f"partner:{partner_id}")
         except Exception:
             logger.warning("Failed to clear cron jobs for '%s'", partner_id, exc_info=True)
-        partner_dir = self._partner_dir(partner_id)
+        partner_dir = self._partner_dir(partner_id, owner_id=owner_id)
         if not partner_dir.exists():
             return False
         shutil.rmtree(partner_dir)
+        # 失效 owner 缓存，确保后续 resolve_owner_for_partner 重新扫描
+        invalidate_owner_cache(partner_id)
         logger.info("Partner '%s' destroyed (data deleted)", partner_id)
         return True
 
@@ -926,7 +1012,7 @@ class PartnerManager:
             if not legacy_config.is_file():
                 continue
             partner_id = entry.name
-            if (self._partner_dir(partner_id) / "config.yaml").exists():
+            if (self._partner_dir(partner_id, owner_id="") / "config.yaml").exists():
                 continue
             try:
                 data = yaml.safe_load(legacy_config.read_text(encoding="utf-8")) or {}
@@ -938,14 +1024,16 @@ class PartnerManager:
                     model=data.get("model"),
                     soul_origin={"type": "tutorbot", "id": partner_id},
                 )
-                self._ensure_partner_dirs(partner_id)
+                self._ensure_partner_dirs(partner_id, owner_id="")
                 persona = str(data.get("persona", "") or "").strip()
                 if persona:
-                    write_soul(partner_id, persona)
-                self.save_config(partner_id, config, auto_start=bool(data.get("auto_start", False)))
+                    write_soul(partner_id, persona, owner_id="")
+                self.save_config(
+                    partner_id, config, auto_start=bool(data.get("auto_start", False)), owner_id=""
+                )
                 legacy_sessions = entry / "workspace" / "sessions"
                 if legacy_sessions.is_dir():
-                    dst = get_partner_sessions_dir(partner_id)
+                    dst = get_partner_sessions_dir(partner_id, owner_id="")
                     for jsonl in legacy_sessions.glob("*.jsonl"):
                         target = dst / jsonl.name
                         if not target.exists():

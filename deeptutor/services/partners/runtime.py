@@ -186,7 +186,8 @@ class PartnerRunner:
         on_event: EventCallback | None = None,
         delivery_meta: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        ensure_partner_workspace(self.partner_id)
+        owner = getattr(self.config, "owner_id", "") or ""
+        ensure_partner_workspace(self.partner_id, owner_id=owner)
         primary = getattr(self.config, "llm_selection", None) or None
         backup = getattr(self.config, "backup_llm_selection", None) or None
 
@@ -235,7 +236,11 @@ class PartnerRunner:
         becomes the reply (the final outbound is then marked ``_streamed``
         so the channel doesn't send it twice).
         """
-        from deeptutor.multi_user.paths import get_admin_path_service
+        from deeptutor.multi_user.paths import (
+            get_admin_path_service,
+            get_path_service_for_scope,
+            scope_for_user,
+        )
         from deeptutor.runtime.orchestrator import ChatOrchestrator
         from deeptutor.services.memory import memory_path_service_override
         from deeptutor.services.model_selection.runtime import (
@@ -281,14 +286,23 @@ class PartnerRunner:
             _config, llm_token = activate_llm_selection(selection)
             # Partner scope routes rag / skills / notebooks at the partner's own
             # workspace, but memory is the *owner's*: partners are anchored to
-            # the admin workspace, so read_memory / write_memory must see the
-            # admin's L3 (gated by the builtin-tool whitelist — an owner denies
+            # the owner workspace, so read_memory / write_memory must see the
+            # owner's L3 (gated by the builtin-tool whitelist — an owner denies
             # memory to an IM-facing partner). Without this, the partner scope's
             # empty memory makes user_has_memory() False and read_memory never
             # mounts, so the agent falls back to notebooks to "know the user".
+            # 多用户隔离：owner 非空时按 owner 解析 memory path service；
+            # owner 为空串时回退到 admin（兼容单机模式）。
+            owner = getattr(self.config, "owner_id", "") or ""
+            if owner:
+                owner_path_service = get_path_service_for_scope(
+                    scope_for_user(owner, is_admin=False)
+                )
+            else:
+                owner_path_service = get_admin_path_service()
             with (
-                user_context(partner_user(self.partner_id, name=self.config.name)),
-                memory_path_service_override(get_admin_path_service()),
+                user_context(partner_user(self.partner_id, name=self.config.name, owner_id=owner)),
+                memory_path_service_override(owner_path_service),
             ):
                 orchestrator = ChatOrchestrator()
                 async for event in orchestrator.handle(context):
@@ -379,7 +393,8 @@ class PartnerRunner:
         # Partner-scope context blocks (soul / skills / KBs) are assembled
         # inside the partner scope so the same service locators the chat
         # turn-runtime uses resolve to the partner workspace.
-        with user_context(partner_user(self.partner_id, name=self.config.name)):
+        owner = getattr(self.config, "owner_id", "") or ""
+        with user_context(partner_user(self.partner_id, name=self.config.name, owner_id=owner)):
             skills_manifest = self._build_skills_manifest()
             kb_names = self._list_kb_names()
 
@@ -431,7 +446,7 @@ class PartnerRunner:
             knowledge_bases=kb_names,
             attachments=attachments,
             language=self._language(),
-            persona_context=read_soul(self.partner_id).strip(),
+            persona_context=read_soul(self.partner_id, owner_id=owner).strip(),
             skills_manifest=skills_manifest,
             source_manifest=source_manifest,
             metadata=metadata,

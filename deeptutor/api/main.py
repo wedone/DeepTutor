@@ -399,8 +399,10 @@ app.include_router(
 app.include_router(
     agent_config.router, prefix="/api/v1/agent-config", tags=["agent-config"], dependencies=_auth
 )
+# Partners router uses _auth (not _admin): ownership checks are enforced
+# per-endpoint inside the router so each user can manage their own partners.
 app.include_router(
-    partners.router, prefix="/api/v1/partners", tags=["partners"], dependencies=_admin
+    partners.router, prefix="/api/v1/partners", tags=["partners"], dependencies=_auth
 )
 app.include_router(
     attachments.router,

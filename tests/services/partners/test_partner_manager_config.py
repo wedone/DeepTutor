@@ -70,9 +70,14 @@ class TestMergeSemantics:
         assert not hasattr(merged, "bogus")
 
     def test_mergeable_fields_match_partnerconfig_fields(self):
-        """Every config field must be mergeable via the API (anti-drift pin)."""
+        """Every config field must be mergeable via the API (anti-drift pin).
+
+        owner_id is intentionally absent — ownership is immutable after creation.
+        """
         field_names = {f.name for f in dataclasses.fields(PartnerConfig)}
-        assert set(PartnerManager._MERGEABLE_FIELDS) == field_names
+        # owner_id 不可通过 merge 修改
+        non_mergeable = {"owner_id"}
+        assert set(PartnerManager._MERGEABLE_FIELDS) == field_names - non_mergeable
 
 
 class TestAutoStart:

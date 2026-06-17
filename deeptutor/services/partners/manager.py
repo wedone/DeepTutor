@@ -20,9 +20,12 @@ from typing import Any, Awaitable, Callable
 import yaml
 
 from deeptutor.partners.config.paths import (
+    _base_dir_for_owner,
+    _resolve_owner_id,
     get_data_dir,
     get_partner_dir,
     get_partner_sessions_dir,
+    invalidate_owner_cache,
 )
 from deeptutor.services.partners.runtime import PartnerRunner
 from deeptutor.services.partners.sessions import PartnerSessionStore
@@ -108,6 +111,7 @@ class PartnerConfig:
     """Configuration for a single partner."""
 
     name: str
+    owner_id: str = ""
     description: str = ""
     channels: dict[str, Any] = field(default_factory=dict)
     llm_selection: dict[str, str] | None = None
@@ -169,6 +173,7 @@ class PartnerInstance:
         return {
             "partner_id": self.partner_id,
             "name": self.config.name,
+            "owner_id": self.config.owner_id,
             "description": self.config.description,
             "channels": channels,
             "llm_selection": self.config.llm_selection,
@@ -201,20 +206,24 @@ class PartnerManager:
     def _partners_dir(self) -> Path:
         return get_data_dir()
 
-    def _partner_dir(self, partner_id: str) -> Path:
-        return self._partners_dir / partner_id
+    def _partner_dir(self, partner_id: str, *, owner_id: str | None = None) -> Path:
+        return get_partner_dir(partner_id, owner_id=owner_id)
 
-    def session_store(self, partner_id: str) -> PartnerSessionStore:
+    def session_store(
+        self, partner_id: str, *, owner_id: str | None = None
+    ) -> PartnerSessionStore:
         store = self._stores.get(partner_id)
         if store is None:
-            store = PartnerSessionStore(get_partner_sessions_dir(partner_id))
+            store = PartnerSessionStore(
+                get_partner_sessions_dir(partner_id, owner_id=owner_id)
+            )
             self._stores[partner_id] = store
         return store
 
-    def _ensure_partner_dirs(self, partner_id: str) -> None:
-        get_partner_dir(partner_id)
+    def _ensure_partner_dirs(self, partner_id: str, *, owner_id: str | None = None) -> None:
+        get_partner_dir(partner_id, owner_id=owner_id)
         ensure_partner_workspace(partner_id)
-        get_partner_sessions_dir(partner_id)
+        get_partner_sessions_dir(partner_id, owner_id=owner_id)
         if not read_soul(partner_id).strip():
             write_soul(partner_id, DEFAULT_SOUL)
 
@@ -223,6 +232,7 @@ class PartnerManager:
     # Every PartnerConfig field must be listed here so merge_config can update
     # it via the API; a field omitted here is silently un-updatable.
     # auto_start is intentionally absent — lifecycle state, not config.
+    # owner_id is intentionally absent — ownership is immutable after creation.
     _MERGEABLE_FIELDS = (
         "name",
         "description",
@@ -239,14 +249,23 @@ class PartnerManager:
         "mcp_tools",
     )
 
-    def load_config(self, partner_id: str) -> PartnerConfig | None:
-        path = self._partner_dir(partner_id) / "config.yaml"
+    def load_config(self, partner_id: str, *, owner_id: str | None = None) -> PartnerConfig | None:
+        resolved_owner = owner_id if owner_id is not None else (_resolve_owner_id(partner_id) or "")
+        path = self._partner_dir(partner_id, owner_id=resolved_owner) / "config.yaml"
         if not path.exists():
             return None
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            # 迁移逻辑：YAML 中缺少 owner_id 时补充 "" 并回写磁盘
+            if "owner_id" not in data:
+                try:
+                    with open(path, "a", encoding="utf-8") as f:
+                        f.write("\nowner_id: \"\"\n")
+                except OSError:
+                    logger.warning("无法回写 owner_id 迁移字段到 %s", path, exc_info=True)
             return PartnerConfig(
                 name=data.get("name", partner_id),
+                owner_id=str(data.get("owner_id", "") or ""),
                 description=data.get("description", ""),
                 channels=strip_legacy_global_delivery(data.get("channels", {}) or {}),
                 llm_selection=data.get("llm_selection"),
@@ -273,13 +292,14 @@ class PartnerManager:
         managed separately from config fields (same contract as TutorBot —
         ``None`` preserves the on-disk value; a brand-new partner defaults to
         ``True``)."""
-        partner_dir = self._partner_dir(partner_id)
+        partner_dir = self._partner_dir(partner_id, owner_id=config.owner_id or None)
         path = partner_dir / "config.yaml"
         if auto_start is None:
             auto_start = self._load_auto_start(partner_id, default=False) if path.exists() else True
         partner_dir.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {
             "name": config.name,
+            "owner_id": config.owner_id,
             "description": config.description,
             "channels": strip_legacy_global_delivery(config.channels),
             "language": config.language,
@@ -304,8 +324,8 @@ class PartnerManager:
         tmp_path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
         tmp_path.replace(path)
 
-    def _load_auto_start(self, partner_id: str, *, default: bool = False) -> bool:
-        path = self._partner_dir(partner_id) / "config.yaml"
+    def _load_auto_start(self, partner_id: str, *, default: bool = False, owner_id: str | None = None) -> bool:
+        path = self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml"
         if not path.exists():
             return default
         try:
@@ -315,9 +335,9 @@ class PartnerManager:
             logger.exception("Failed to load auto_start flag for partner '%s'", partner_id)
             return default
 
-    def auto_start_enabled(self, partner_id: str, *, default: bool = False) -> bool:
+    def auto_start_enabled(self, partner_id: str, *, default: bool = False, owner_id: str | None = None) -> bool:
         """Return whether this partner is allowed to start without an explicit user action."""
-        return self._load_auto_start(partner_id, default=default)
+        return self._load_auto_start(partner_id, default=default, owner_id=owner_id)
 
     def merge_config(self, partner_id: str, overrides: dict[str, Any]) -> PartnerConfig:
         """Overlay non-``None`` overrides onto the on-disk config.
@@ -339,18 +359,20 @@ class PartnerManager:
         if partner_id in self._partners and self._partners[partner_id].running:
             return self._partners[partner_id]
 
-        self._ensure_partner_dirs(partner_id)
-
+        # 如果没有提供 config，先加载以获取 owner_id
         if config is None:
             config = self.load_config(partner_id)
         if config is None:
             config = PartnerConfig(name=partner_id)
             self.save_config(partner_id, config)
 
+        owner_id = config.owner_id or None
+        self._ensure_partner_dirs(partner_id, owner_id=owner_id)
+
         from deeptutor.partners.bus.queue import MessageBus
 
         bus = MessageBus()
-        store = self.session_store(partner_id)
+        store = self.session_store(partner_id, owner_id=owner_id)
         runner = PartnerRunner(partner_id, config, bus, store, save_config=self.save_config)
 
         try:
@@ -442,7 +464,7 @@ class PartnerManager:
         if not instance:
             return False
         auto_start = (
-            self._load_auto_start(partner_id, default=True) if preserve_auto_start else False
+            self._load_auto_start(partner_id, default=True, owner_id=instance.config.owner_id or None) if preserve_auto_start else False
         )
 
         for task in instance.tasks:
@@ -488,6 +510,9 @@ class PartnerManager:
             partner_id,
             list(manager.channels.keys()),
         )
+        # 注入 partner_id 到每个 channel 实例
+        for ch in manager.channels.values():
+            ch.partner_id = partner_id
         return manager
 
     async def reload_channels(self, partner_id: str) -> None:
@@ -559,32 +584,70 @@ class PartnerManager:
 
     # ── Listing & discovery ───────────────────────────────────────
 
-    def _discover_partner_ids(self) -> set[str]:
-        self._migrate_legacy_tutorbot()
-        ids: set[str] = set()
-        if not self._partners_dir.exists():
-            return ids
-        for entry in self._partners_dir.iterdir():
-            if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
-                continue
-            if entry.is_dir() and (entry / "config.yaml").exists():
-                ids.add(entry.name)
-        return ids
+    def _discover_all_partner_ids(self) -> dict[str, str]:
+        """扫描所有用户的 partners 目录，返回 {partner_id: owner_id}。
 
-    def list_partners(self) -> list[dict[str, Any]]:
-        """All known partners (running + configured on disk); channels keys-only."""
+        owner_id 为空串 "" 表示位于 admin 目录 data/partners/；
+        owner_id 为 uid 表示位于 data/users/<uid>/partners/。
+        """
+        self._migrate_legacy_tutorbot()
+        result: dict[str, str] = {}
+
+        # 扫描 admin 目录
+        admin_dir = _base_dir_for_owner("")
+        if admin_dir.exists():
+            for entry in admin_dir.iterdir():
+                if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
+                    continue
+                if entry.is_dir() and (entry / "config.yaml").exists():
+                    result[entry.name] = ""
+
+        # 扫描各用户目录
+        from deeptutor.multi_user.paths import USERS_ROOT
+
+        if USERS_ROOT.is_dir():
+            for uid_entry in USERS_ROOT.iterdir():
+                if not uid_entry.is_dir():
+                    continue
+                user_partners_dir = uid_entry / "partners"
+                if not user_partners_dir.is_dir():
+                    continue
+                for entry in user_partners_dir.iterdir():
+                    if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
+                        continue
+                    if entry.is_dir() and (entry / "config.yaml").exists():
+                        result[entry.name] = uid_entry.name
+
+        return result
+
+    def _discover_partner_ids(self) -> set[str]:
+        """仅扫描 admin 目录的 partner_id 集合（向后兼容）。"""
+        all_ids = self._discover_all_partner_ids()
+        return {pid for pid, oid in all_ids.items() if oid == ""}
+
+    def list_partners(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
+        """All known partners (running + configured on disk); channels keys-only.
+
+        如果提供了 owner_id，只返回匹配的 partner；
+        如果未提供 owner_id，返回所有 partner（向后兼容）。
+        """
         result: dict[str, dict[str, Any]] = {}
 
         for inst in self._partners.values():
+            if owner_id is not None and inst.config.owner_id != owner_id:
+                continue
             result[inst.partner_id] = inst.to_dict()
 
-        for pid in self._discover_partner_ids():
+        for pid, oid in self._discover_all_partner_ids().items():
             if pid in result:
                 continue
-            cfg = self.load_config(pid)
+            if owner_id is not None and oid != owner_id:
+                continue
+            cfg = self.load_config(pid, owner_id=oid or None)
             result[pid] = {
                 "partner_id": pid,
                 "name": cfg.name if cfg else pid,
+                "owner_id": cfg.owner_id if cfg else oid,
                 "description": cfg.description if cfg else "",
                 "channels": list(cfg.channels.keys()) if cfg else [],
                 "llm_selection": cfg.llm_selection if cfg else None,
@@ -606,8 +669,13 @@ class PartnerManager:
     def get_partner(self, partner_id: str) -> PartnerInstance | None:
         return self._partners.get(partner_id)
 
-    def partner_exists(self, partner_id: str) -> bool:
-        return (self._partner_dir(partner_id) / "config.yaml").exists()
+    def partner_exists(self, partner_id: str, *, owner_id: str | None = None) -> bool:
+        if owner_id is not None:
+            return (self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml").exists()
+        resolved = _resolve_owner_id(partner_id)
+        if resolved is None:
+            return False
+        return (self._partner_dir(partner_id, owner_id=resolved) / "config.yaml").exists()
 
     @staticmethod
     def web_session_key(
@@ -685,13 +753,13 @@ class PartnerManager:
     # ── Boot / shutdown ───────────────────────────────────────────
 
     async def auto_start_partners(self) -> None:
-        for pid in self._discover_partner_ids():
+        for pid, oid in self._discover_all_partner_ids().items():
             if pid in self._partners and self._partners[pid].running:
                 continue
             try:
-                if not self._load_auto_start(pid, default=False):
+                if not self._load_auto_start(pid, default=False, owner_id=oid or None):
                     continue
-                config = self.load_config(pid)
+                config = self.load_config(pid, owner_id=oid or None)
                 if config is None:
                     continue
                 await self.start_partner(pid, config)
@@ -712,10 +780,13 @@ class PartnerManager:
             get_cron_service().remove_owner_jobs(f"partner:{partner_id}")
         except Exception:
             logger.warning("Failed to clear cron jobs for '%s'", partner_id, exc_info=True)
-        partner_dir = self._partner_dir(partner_id)
+        # 先解析 owner_id 再删除目录
+        resolved_owner = _resolve_owner_id(partner_id) or ""
+        partner_dir = self._partner_dir(partner_id, owner_id=resolved_owner or None)
         if not partner_dir.exists():
             return False
         shutil.rmtree(partner_dir)
+        invalidate_owner_cache()
         logger.info("Partner '%s' destroyed (data deleted)", partner_id)
         return True
 
@@ -758,6 +829,7 @@ class PartnerManager:
                 data = yaml.safe_load(legacy_config.read_text(encoding="utf-8")) or {}
                 config = PartnerConfig(
                     name=data.get("name", partner_id),
+                    owner_id="",
                     description=data.get("description", ""),
                     channels=data.get("channels", {}) or {},
                     llm_selection=data.get("llm_selection"),

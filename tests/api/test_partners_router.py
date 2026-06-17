@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -80,9 +81,12 @@ class TestCreate:
         assert body["soul_origin"] == {"type": "custom", "id": ""}
         assert body["provisioning"]["errors"] == []
 
-    def test_duplicate_id_conflicts(self, client):
+    def test_duplicate_id_auto_suffix(self, client):
         assert _create(client).status_code == 200
-        assert _create(client).status_code == 409
+        # 同用户内创建同名 partner 自动加后缀，不再返回 409
+        res = _create(client)
+        assert res.status_code == 200
+        assert res.json()["partner_id"] == "ada-2"
 
     def test_top_level_delivery_flags_rejected(self, client):
         res = _create(client, channels={"send_progress": False})
@@ -263,3 +267,176 @@ class TestChatAttachments:
         assert path.read_bytes() == b"hello"
         assert path.name.endswith("_notes.txt")
         assert path.parent == isolated_root / "partners" / "ada" / "media" / "web"
+
+
+# ── Ownership 校验测试 ──────────────────────────────────────────
+
+
+def _make_user(user_id: str, is_admin: bool = False):
+    """构造一个 CurrentUser 对象用于 mock get_current_user。"""
+    from deeptutor.multi_user.models import CurrentUser, UserScope
+    from deeptutor.multi_user.paths import admin_scope, scope_for_user
+
+    if is_admin:
+        scope = admin_scope()
+    else:
+        scope = scope_for_user(user_id, is_admin=False)
+    return CurrentUser(id=user_id, username=user_id, role="admin" if is_admin else "user", scope=scope)
+
+
+class TestOwnership:
+    """测试 _check_partner_owner 和 owner_id 自动填充。"""
+
+    def test_create_fills_owner_id_for_admin(self, client, isolated_root):
+        """admin 用户创建的 partner owner_id 为空串。"""
+        admin_user = _make_user("local-admin", is_admin=True)
+        with patch("deeptutor.api.routers.partners._check_partner_owner", return_value=""), \
+             patch("deeptutor.multi_user.context.get_current_user", return_value=admin_user):
+            res = _create(client)
+        assert res.status_code == 200
+        assert res.json()["owner_id"] == ""
+
+    def test_create_fills_owner_id_for_normal_user(self, client, isolated_root):
+        """普通用户创建的 partner owner_id 为用户 id。"""
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
+        user = _make_user("user1")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user):
+            res = _create(client)
+        assert res.status_code == 200
+        assert res.json()["owner_id"] == "user1"
+        invalidate_owner_cache()
+
+    def test_admin_cannot_access_user_partner(self, client, isolated_root):
+        """admin 不能操作属于普通用户的 partner。"""
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
+        # 先以普通用户创建 partner
+        user = _make_user("user1")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user):
+            res = _create(client)
+        assert res.status_code == 200
+        invalidate_owner_cache()
+
+        # admin 尝试访问该 partner → 403
+        admin_user = _make_user("local-admin", is_admin=True)
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=admin_user):
+            res = client.get("/api/v1/partners/ada")
+        assert res.status_code == 403
+        invalidate_owner_cache()
+
+    def test_user_cannot_access_other_user_partner(self, client, isolated_root):
+        """普通用户不能操作属于其他用户的 partner。"""
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
+        # 以 user1 创建 partner
+        user1 = _make_user("user1")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user1):
+            res = _create(client)
+        assert res.status_code == 200
+        invalidate_owner_cache()
+
+        # user2 尝试访问 → 403
+        user2 = _make_user("user2")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user2):
+            res = client.get("/api/v1/partners/ada")
+        assert res.status_code == 403
+        invalidate_owner_cache()
+
+    def test_user_can_access_own_partner(self, client, isolated_root):
+        """普通用户可以访问自己的 partner。"""
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
+        user = _make_user("user1")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user):
+            res = _create(client)
+        assert res.status_code == 200
+        invalidate_owner_cache()
+
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user):
+            res = client.get("/api/v1/partners/ada")
+        assert res.status_code == 200
+        assert res.json()["owner_id"] == "user1"
+        invalidate_owner_cache()
+
+    def test_list_partners_filters_by_owner(self, client, isolated_root):
+        """list_partners 只返回当前用户的 partner。"""
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
+        # admin 创建 partner
+        admin_user = _make_user("local-admin", is_admin=True)
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=admin_user):
+            _create(client, name="Admin Partner")
+            invalidate_owner_cache()
+
+        # user1 创建 partner
+        user1 = _make_user("user1")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user1):
+            _create(client, name="User1 Partner")
+            invalidate_owner_cache()
+
+        # admin 列表只看到 owner_id="" 的 partner
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=admin_user):
+            res = client.get("/api/v1/partners")
+        assert res.status_code == 200
+        names = [p["name"] for p in res.json()]
+        assert "Admin Partner" in names
+        assert "User1 Partner" not in names
+
+        # user1 列表只看到自己的 partner
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user1):
+            res = client.get("/api/v1/partners")
+        assert res.status_code == 200
+        names = [p["name"] for p in res.json()]
+        assert "User1 Partner" in names
+        assert "Admin Partner" not in names
+        invalidate_owner_cache()
+
+    def test_different_users_can_create_same_name_partner(self, client, isolated_root):
+        """不同用户可以创建同名 partner。"""
+        from deeptutor.partners.config.paths import invalidate_owner_cache
+
+        # admin 创建 ada
+        admin_user = _make_user("local-admin", is_admin=True)
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=admin_user):
+            res = _create(client)
+        assert res.status_code == 200
+        assert res.json()["partner_id"] == "ada"
+        invalidate_owner_cache()
+
+        # user1 也可以创建 ada（不同 owner scope）
+        user1 = _make_user("user1")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user1):
+            res = _create(client)
+        assert res.status_code == 200
+        assert res.json()["partner_id"] == "ada"
+        assert res.json()["owner_id"] == "user1"
+        invalidate_owner_cache()
+
+    def test_soul_library_write_requires_admin(self, client, isolated_root):
+        """灵魂模板库写操作仅限 admin。"""
+        user = _make_user("user1")
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user):
+            res = client.post(
+                "/api/v1/partners/souls",
+                json={"id": "test-soul", "name": "Test", "content": "# Soul"},
+            )
+        assert res.status_code == 403
+
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user):
+            res = client.put(
+                "/api/v1/partners/souls/companion",
+                json={"name": "Renamed"},
+            )
+        assert res.status_code == 403
+
+        with patch("deeptutor.multi_user.context.get_current_user", return_value=user):
+            res = client.delete("/api/v1/partners/souls/companion")
+        assert res.status_code == 403
+
+    def test_stopped_partner_dict_includes_owner_id(self, client, isolated_root):
+        """_stopped_partner_dict 返回中包含 owner_id 字段。"""
+        res = _create(client)
+        assert res.status_code == 200
+        body = res.json()
+        assert "owner_id" in body

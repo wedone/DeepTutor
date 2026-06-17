@@ -5,6 +5,7 @@ import type { LLMSelection } from "@/lib/unified-ws";
 
 export interface PartnerInfo {
   partner_id: string;
+  owner_id: string;
   name: string;
   description: string;
   /** List endpoints: channel name keys only. Detail: full (masked) dict. */

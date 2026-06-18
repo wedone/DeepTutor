@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSock
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from deeptutor.api.routers.auth import require_admin
+from deeptutor.api.routers.auth import require_admin, require_auth
 from deeptutor.core.i18n import t
 from deeptutor.multi_user.context import get_current_user
 from deeptutor.partners.config.paths import (
@@ -396,7 +396,7 @@ async def delete_soul(soul_id: str, _: Any = Depends(require_admin)):
 
 
 @router.get("/soul-sources")
-async def soul_sources(_: Any = Depends(require_admin)):
+async def soul_sources(_: Any = Depends(require_auth)):
     """Everything the create-wizard's soul step can start from."""
     from deeptutor.multi_user.context import get_current_user
     from deeptutor.multi_user.paths import get_admin_path_service

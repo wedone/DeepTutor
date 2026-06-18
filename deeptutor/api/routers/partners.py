@@ -444,7 +444,9 @@ async def list_partners():
 
 @router.get("/recent")
 async def recent_partners(limit: int = 3):
-    return get_partner_manager().get_recent_active_partners(limit=limit)
+    return get_partner_manager().get_recent_active_partners(
+        limit=limit, owner_id=_current_owner_id()
+    )
 
 
 @router.get("/channels/schema")
@@ -797,7 +799,9 @@ async def get_partner_history(
     mgr = get_partner_manager()
     if session_id and not session_key:
         session_key = mgr.web_session_key(partner_id, session_id=session_id)
-    return mgr.get_history(partner_id, session_key=session_key, limit=limit)
+    return mgr.get_history(
+        partner_id, session_key=session_key, limit=limit, owner_id=owner_id
+    )
 
 
 @router.get("/{partner_id}/sessions")
@@ -816,7 +820,7 @@ async def archive_partner_session(partner_id: str, payload: SessionKeyBody):
     mgr = get_partner_manager()
     if not mgr.partner_exists(partner_id, owner_id=owner_id):
         raise HTTPException(status_code=404, detail=t("api.partner_not_found"))
-    mgr.archive_session(partner_id, payload.session_key)
+    mgr.archive_session(partner_id, payload.session_key, owner_id=owner_id)
     return {"partner_id": partner_id, "archived": True, "session_key": payload.session_key}
 
 
@@ -827,7 +831,7 @@ async def resume_partner_session(partner_id: str, payload: SessionKeyBody):
     mgr = get_partner_manager()
     if not mgr.partner_exists(partner_id, owner_id=owner_id):
         raise HTTPException(status_code=404, detail=t("api.partner_not_found"))
-    summary = mgr.resume_session(partner_id, payload.session_key)
+    summary = mgr.resume_session(partner_id, payload.session_key, owner_id=owner_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"partner_id": partner_id, "resumed": True, "session": summary}
@@ -839,7 +843,7 @@ async def delete_partner_session(partner_id: str, payload: SessionKeyBody):
     mgr = get_partner_manager()
     if not mgr.partner_exists(partner_id, owner_id=owner_id):
         raise HTTPException(status_code=404, detail=t("api.partner_not_found"))
-    removed = mgr.delete_session(partner_id, payload.session_key)
+    removed = mgr.delete_session(partner_id, payload.session_key, owner_id=owner_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"partner_id": partner_id, "deleted": True, "session_key": payload.session_key}
@@ -852,7 +856,9 @@ async def branch_partner_session(partner_id: str, payload: SessionBranchBody):
     mgr = get_partner_manager()
     if not mgr.partner_exists(partner_id, owner_id=owner_id):
         raise HTTPException(status_code=404, detail=t("api.partner_not_found"))
-    summary = mgr.branch_session(partner_id, payload.source_key, payload.new_key)
+    summary = mgr.branch_session(
+        partner_id, payload.source_key, payload.new_key, owner_id=owner_id
+    )
     if summary is None:
         raise HTTPException(status_code=400, detail="Nothing to branch (source is empty)")
     return {"partner_id": partner_id, "branched": True, "session": summary}

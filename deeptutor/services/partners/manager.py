@@ -763,19 +763,29 @@ class PartnerManager:
         return f"partner:{partner_id}"
 
     def get_history(
-        self, partner_id: str, *, session_key: str | None = None, limit: int = 100
+        self,
+        partner_id: str,
+        *,
+        session_key: str | None = None,
+        limit: int = 100,
+        owner_id: str = "",
     ) -> list[dict[str, Any]]:
-        store = self.session_store(partner_id)
+        store = self.session_store(partner_id, owner_id=owner_id)
         if session_key:
             return store.messages(session_key, limit=limit)
         return store.merged_messages(limit=limit)
 
-    def get_recent_active_partners(self, limit: int = 3) -> list[dict[str, Any]]:
+    def get_recent_active_partners(
+        self, limit: int = 3, *, owner_id: str | None = None
+    ) -> list[dict[str, Any]]:
         from deeptutor.partners.config.paths import resolve_owner_for_partner
 
         activity: list[tuple[str, dict[str, Any]]] = []
         for pid in self._discover_partner_ids():
             owner = resolve_owner_for_partner(pid)
+            # 按 owner 过滤：None 返回全部（兼容旧调用）；否则只返回匹配的
+            if owner_id is not None and owner != owner_id:
+                continue
             sessions = self.session_store(pid, owner_id=owner).list_sessions()
             if not sessions:
                 continue
@@ -919,25 +929,27 @@ class PartnerManager:
 
     # ── Session lifecycle (web management) ────────────────────────
 
-    def resume_session(self, partner_id: str, session_key: str) -> dict[str, Any] | None:
+    def resume_session(
+        self, partner_id: str, session_key: str, *, owner_id: str = ""
+    ) -> dict[str, Any] | None:
         """Clear a session's archived flag so it becomes current again."""
-        store = self.session_store(partner_id)
+        store = self.session_store(partner_id, owner_id=owner_id)
         store.set_archived(session_key, False)
         for session in store.list_sessions():
             if session["session_key"] == store._stem(session_key):
                 return session
         return None
 
-    def delete_session(self, partner_id: str, session_key: str) -> bool:
-        return self.session_store(partner_id).delete_session(session_key)
+    def delete_session(self, partner_id: str, session_key: str, *, owner_id: str = "") -> bool:
+        return self.session_store(partner_id, owner_id=owner_id).delete_session(session_key)
 
     def branch_session(
-        self, partner_id: str, source_key: str, new_key: str
+        self, partner_id: str, source_key: str, new_key: str, *, owner_id: str = ""
     ) -> dict[str, Any] | None:
-        return self.session_store(partner_id).branch(source_key, new_key)
+        return self.session_store(partner_id, owner_id=owner_id).branch(source_key, new_key)
 
-    def archive_session(self, partner_id: str, session_key: str) -> None:
-        self.session_store(partner_id).set_archived(session_key, True)
+    def archive_session(self, partner_id: str, session_key: str, *, owner_id: str = "") -> None:
+        self.session_store(partner_id, owner_id=owner_id).set_archived(session_key, True)
 
     # ── Boot / shutdown ───────────────────────────────────────────
 

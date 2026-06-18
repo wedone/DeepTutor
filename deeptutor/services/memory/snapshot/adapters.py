@@ -4,7 +4,7 @@ One pure read-only function per surface. Adapters never mutate
 workspace state. They read whatever lives under
 ``data/user/workspace/`` (or, for chat/quiz, the chat history SQLite
 DB; for kb-list, the kb config JSON; for the ``partner`` surface, the
-per-partner conversation JSONL under ``data/partners/``).
+per-partner conversation JSONL under ``<workspace_root>/partners/``).
 
 Each adapter returns a ``list[Entity]`` with stable ``id`` and a
 deterministic ``fingerprint`` so the diff engine can detect changes
@@ -298,21 +298,17 @@ def read_partner_entities() -> list[Entity]:
     surface (UI label "伙伴").
 
     Partner runtimes persist conversations as JSONL under
-    ``data/partners/<id>/sessions/*.jsonl`` — a store entirely separate from
-    the chat-history SQLite DB the ``chat`` adapter reads. This adapter
-    bridges that store into the memory pipeline so partner conversations
-    consolidate into L2/L3 like every other surface.
+    ``<workspace_root>/partners/<id>/sessions/*.jsonl`` — a store entirely
+    separate from the chat-history SQLite DB the ``chat`` adapter reads.
+    This adapter bridges that store into the memory pipeline so partner
+    conversations consolidate into L2/L3 like every other surface.
 
-    Partners are anchored to the admin workspace, so we only surface them
-    when the active scope IS the admin's own memory; a regular user's memory
-    view must not see the admin's partner conversations.
+    路径随当前用户的 PathService 自动隔离：
+    - admin → ``data/partners/``
+    - 普通用户 → ``data/users/<uid>/partners/``
+    每个用户只看到自己的 partner 会话，互不可见。
     """
-    from deeptutor.multi_user.paths import get_admin_path_service
-
-    admin_root = get_admin_path_service().workspace_root.resolve()
-    if get_path_service().workspace_root.resolve() != admin_root:
-        return []
-    partners_root = admin_root / "partners"
+    partners_root = get_path_service().workspace_root / "partners"
     if not partners_root.exists():
         return []
 

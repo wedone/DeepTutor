@@ -242,6 +242,7 @@ class PartnerRunner:
             reset_llm_selection,
         )
 
+        owner = getattr(self.config, "owner_id", "") or ""
         final_text = ""
         terminator_text = ""
         turn_id = ""

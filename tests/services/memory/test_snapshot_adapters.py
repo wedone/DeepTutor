@@ -37,11 +37,8 @@ def _write_session(sessions_dir: Path, key: str, turns: list[tuple[str, str]]) -
 
 @pytest.fixture
 def partner_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Make ``tmp_path`` the admin root and route both path services there."""
+    """Make ``tmp_path`` the workspace root and route path service there."""
     monkeypatch.setattr(adapters, "get_path_service", lambda: _FakePathService(tmp_path))
-    import deeptutor.multi_user.paths as mu_paths
-
-    monkeypatch.setattr(mu_paths, "get_admin_path_service", lambda: _FakePathService(tmp_path))
     return tmp_path
 
 
@@ -109,20 +106,32 @@ def test_missing_config_uses_dir_id_as_name(partner_tree: Path) -> None:
     assert entities[0].metadata["partner_name"] == "bot3"
 
 
-def test_non_admin_scope_sees_no_partners(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A regular user's memory view must not surface admin partner chats."""
+def test_non_admin_scope_isolated_from_admin_partners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A regular user sees only their own partners, never the admin's."""
     admin_root = tmp_path / "admin"
-    user_root = tmp_path / "users" / "u1" / "workspace"
-    pdir = admin_root / "partners" / "bot1"
-    pdir.mkdir(parents=True)
-    _write_session(pdir / "sessions", "web:s", [("user", "q"), ("assistant", "a")])
+    user_root = tmp_path / "users" / "u1"
 
-    monkeypatch.setattr(adapters, "get_path_service", lambda: _FakePathService(user_root))
-    import deeptutor.multi_user.paths as mu_paths
+    # admin 的 partner
+    admin_pdir = admin_root / "partners" / "bot_admin"
+    admin_pdir.mkdir(parents=True)
+    _write_session(admin_pdir / "sessions", "web:s",
+                   [("user", "q"), ("assistant", "a")])
 
-    monkeypatch.setattr(mu_paths, "get_admin_path_service", lambda: _FakePathService(admin_root))
+    # 用户自己的 partner
+    user_pdir = user_root / "partners" / "bot_user"
+    user_pdir.mkdir(parents=True)
+    (user_pdir / "config.yaml").write_text("name: User Bot\n", encoding="utf-8")
+    _write_session(user_pdir / "sessions", "web:s",
+                   [("user", "hi"), ("assistant", "yo")])
 
-    assert adapters.read_partner_entities() == []
+    monkeypatch.setattr(adapters, "get_path_service",
+                        lambda: _FakePathService(user_root))
+
+    entities = adapters.read_partner_entities()
+    assert len(entities) == 1
+    assert entities[0].metadata["partner_id"] == "bot_user"
 
 
 def test_fingerprint_changes_when_conversation_grows(partner_tree: Path) -> None:

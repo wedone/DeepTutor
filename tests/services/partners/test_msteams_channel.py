@@ -23,7 +23,9 @@ from deeptutor.partners.channels.msteams import (
 @pytest.fixture
 def state_dir(tmp_path, monkeypatch):
     """Redirect the channel's runtime state dir to a temp directory."""
-    monkeypatch.setattr(msteams_mod, "get_runtime_subdir", lambda name: tmp_path)
+    monkeypatch.setattr(
+        msteams_mod, "get_partner_runtime_subdir", lambda partner_id, name, **kw: tmp_path
+    )
     return tmp_path
 
 
@@ -289,6 +291,7 @@ class TestConversationRefs:
         await ch1._handle_activity(_activity())
 
         ch2 = _make_channel()
+        ch2._ensure_refs_initialized()
         assert "a:conv-1" in ch2._conversation_refs
         assert ch2._conversation_refs["a:conv-1"].service_url == (
             "https://smba.trafficmanager.net/amer/"
@@ -305,6 +308,7 @@ class TestConversationRefs:
         )
 
         ch2 = _make_channel(ref_ttl_days=30)
+        ch2._ensure_refs_initialized()
         assert "a:conv-1" not in ch2._conversation_refs
         refs_on_disk = json.loads((state_dir / MSTEAMS_REF_FILENAME).read_text())
         assert refs_on_disk == {}
@@ -315,6 +319,7 @@ class TestConversationRefs:
         await ch1._handle_activity(_activity())
 
         ch2 = _make_channel(ref_ttl_days=30)
+        ch2._ensure_refs_initialized()
         assert "a:conv-1" in ch2._conversation_refs
 
     def test_prune_drops_webchat_refs(self, state_dir):

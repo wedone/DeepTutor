@@ -26,5 +26,35 @@ def partners_root(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(paths, "SYSTEM_ROOT", admin_root / "system")
     monkeypatch.setattr(paths, "_path_services", {})
 
+    # manager.py imports ADMIN_WORKSPACE_ROOT / USERS_ROOT at module level
+    # via ``from deeptutor.multi_user.paths import …``; patch those refs too.
+    from deeptutor.services.partners import manager as _mgr_mod
+    monkeypatch.setattr(_mgr_mod, "ADMIN_WORKSPACE_ROOT", admin_root)
+    monkeypatch.setattr(_mgr_mod, "USERS_ROOT", admin_root / "users")
+
     admin_root.mkdir(parents=True, exist_ok=True)
+
+    from deeptutor.partners.config.paths import invalidate_owner_cache
+    invalidate_owner_cache()
+
     return admin_root / "partners"
+
+
+@pytest.fixture
+def user_partners_root(partners_root):
+    """多用户测试辅助 fixture：返回一个工厂函数。
+
+    调用 ``user_partners_root(uid)`` 会创建 ``data/users/<uid>/partners/``
+    目录并返回该路径；同时清空 owner 缓存以避免跨测试污染。依赖
+    ``partners_root`` 以复用 admin workspace 的路径隔离。
+    """
+    from deeptutor.multi_user import paths
+    from deeptutor.partners.config.paths import invalidate_owner_cache
+
+    def _make(uid: str) -> Path:
+        user_partners_dir = paths.USERS_ROOT / uid / "partners"
+        user_partners_dir.mkdir(parents=True, exist_ok=True)
+        invalidate_owner_cache()
+        return user_partners_dir
+
+    return _make

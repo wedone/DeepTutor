@@ -186,7 +186,8 @@ class PartnerRunner:
         on_event: EventCallback | None = None,
         delivery_meta: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
-        ensure_partner_workspace(self.partner_id)
+        owner = getattr(self.config, "owner_id", "") or ""
+        ensure_partner_workspace(self.partner_id, owner_id=owner)
         primary = getattr(self.config, "llm_selection", None) or None
         backup = getattr(self.config, "backup_llm_selection", None) or None
 
@@ -285,7 +286,7 @@ class PartnerRunner:
             # writes only the partner's own. Chat's read_memory / write_memory
             # are suppressed on partner turns, so no admin memory override is
             # needed here (and the partner can never write the owner's memory).
-            with user_context(partner_user(self.partner_id, name=self.config.name)):
+            with user_context(partner_user(self.partner_id, name=self.config.name, owner_id=owner)):
                 orchestrator = ChatOrchestrator()
                 async for event in orchestrator.handle(context):
                     if on_event is not None:
@@ -362,6 +363,7 @@ class PartnerRunner:
     # ── context assembly ──────────────────────────────────────────
 
     def _build_context(self, msg: InboundMessage) -> UnifiedContext:
+        owner = getattr(self.config, "owner_id", "") or ""
         session_key = msg.session_key
         turn_id = f"partner-{self.partner_id}-{uuid.uuid4().hex[:12]}"
         history = self.store.conversation_history(session_key)
@@ -375,7 +377,7 @@ class PartnerRunner:
         # Partner-scope context blocks (soul / skills / KBs) are assembled
         # inside the partner scope so the same service locators the chat
         # turn-runtime uses resolve to the partner workspace.
-        with user_context(partner_user(self.partner_id, name=self.config.name)):
+        with user_context(partner_user(self.partner_id, name=self.config.name, owner_id=owner)):
             skills_manifest = self._build_skills_manifest()
             kb_names = self._list_kb_names()
 
@@ -427,7 +429,7 @@ class PartnerRunner:
             knowledge_bases=kb_names,
             attachments=attachments,
             language=self._language(),
-            persona_context=read_soul(self.partner_id).strip(),
+            persona_context=read_soul(self.partner_id, owner_id=owner).strip(),
             skills_manifest=skills_manifest,
             source_manifest=source_manifest,
             metadata=metadata,

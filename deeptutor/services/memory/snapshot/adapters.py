@@ -298,21 +298,20 @@ def read_partner_entities() -> list[Entity]:
     surface (UI label "伙伴").
 
     Partner runtimes persist conversations as JSONL under
-    ``data/partners/<id>/sessions/*.jsonl`` — a store entirely separate from
-    the chat-history SQLite DB the ``chat`` adapter reads. This adapter
-    bridges that store into the memory pipeline so partner conversations
-    consolidate into L2/L3 like every other surface.
+    ``<workspace_root>/partners/<id>/sessions/*.jsonl`` — a store entirely
+    separate from the chat-history SQLite DB the ``chat`` adapter reads.
+    This adapter bridges that store into the memory pipeline so partner
+    conversations consolidate into L2/L3 like every other surface.
 
-    Partners are anchored to the admin workspace, so we only surface them
-    when the active scope IS the admin's own memory; a regular user's memory
-    view must not see the admin's partner conversations.
+    The path follows the current user's PathService for automatic
+    isolation:
+
+    - admin → ``data/partners/``
+    - regular user → ``data/users/<uid>/partners/``
+
+    Each user only sees their own partner conversations.
     """
-    from deeptutor.multi_user.paths import get_admin_path_service
-
-    admin_root = get_admin_path_service().workspace_root.resolve()
-    if get_path_service().workspace_root.resolve() != admin_root:
-        return []
-    partners_root = admin_root / "partners"
+    partners_root = get_path_service().workspace_root / "partners"
     if not partners_root.exists():
         return []
 

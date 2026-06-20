@@ -66,6 +66,19 @@ def _resolve_partner_id() -> str | None:
     return user_id[len(PARTNER_USER_PREFIX) :]
 
 
+def _resolve_partner_owner_id() -> str:
+    """The owner_id of the current partner, or "" for admin-owned partners.
+
+    Resolved by looking up the partner_id in the owner cache.
+    """
+    partner_id = _resolve_partner_id()
+    if partner_id is None:
+        return ""
+    from deeptutor.partners.config.paths import resolve_owner_for_partner
+
+    return resolve_owner_for_partner(partner_id)
+
+
 def _snippet_around(content: str, needle_lower: str) -> str:
     """A one-line window of *content* centred on the first match of *needle*."""
     low = content.lower()
@@ -105,10 +118,21 @@ class PartnerReadTool(BaseTool):
         from deeptutor.multi_user.paths import (
             get_admin_path_service,
             get_current_path_service,
+            get_path_service_for_scope,
+            scope_for_user,
         )
         from deeptutor.services.memory import memory_path_service_override
 
-        with memory_path_service_override(get_admin_path_service()):
+        # Resolve owner's path service: non-admin owners read their own L3,
+        # admin owners (owner_id=="") read admin L3.
+        partner_owner_id = _resolve_partner_owner_id()
+        if partner_owner_id:
+            owner_ps = get_path_service_for_scope(
+                scope_for_user(partner_owner_id, is_admin=False)
+            )
+        else:
+            owner_ps = get_admin_path_service()
+        with memory_path_service_override(owner_ps):
             shared = _concat_l3()
         with memory_path_service_override(get_current_path_service()):
             own = _concat_l3()
@@ -251,11 +275,6 @@ class PartnerSearchTool(BaseTool):
         query = str(kwargs.get("query") or "").strip()
         if not query:
             return ToolResult(content="Error: query is required.", success=False)
-        try:
-            limit = int(kwargs.get("limit") or 30)
-        except (TypeError, ValueError):
-            limit = 30
-        limit = max(1, min(limit, 100))
 
         partner_id = _resolve_partner_id()
         if partner_id is None:
@@ -264,7 +283,14 @@ class PartnerSearchTool(BaseTool):
                 success=False,
             )
 
-        store = PartnerSessionStore(get_partner_sessions_dir(partner_id))
+        owner_id = _resolve_partner_owner_id()
+        store = PartnerSessionStore(get_partner_sessions_dir(partner_id, owner_id=owner_id))
+        try:
+            limit = int(kwargs.get("limit") or 30)
+        except (TypeError, ValueError):
+            limit = 30
+        limit = max(1, min(limit, 100))
+
         needle = query.lower()
         # (timestamp, formatted_line) — collected across all sessions, then
         # sorted most-recent-first and truncated to ``limit``.

@@ -20,8 +20,8 @@ def partner_user_id(partner_id: str) -> str:
     return f"{PARTNER_USER_PREFIX}{partner_id}"
 
 
-def partner_scope(partner_id: str) -> UserScope:
-    workspace = get_partner_workspace(partner_id)
+def partner_scope(partner_id: str, *, owner_id: str = "") -> UserScope:
+    workspace = get_partner_workspace(partner_id, owner_id=owner_id)
     return UserScope(
         kind="user",
         user_id=partner_user_id(partner_id),
@@ -29,8 +29,8 @@ def partner_scope(partner_id: str) -> UserScope:
     )
 
 
-def partner_user(partner_id: str, *, name: str = "") -> CurrentUser:
-    scope = partner_scope(partner_id)
+def partner_user(partner_id: str, *, name: str = "", owner_id: str = "") -> CurrentUser:
+    scope = partner_scope(partner_id, owner_id=owner_id)
     return CurrentUser(
         id=scope.user_id,
         username=name or partner_id,

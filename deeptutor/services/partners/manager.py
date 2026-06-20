@@ -20,10 +20,14 @@ from typing import Any, Awaitable, Callable
 import yaml
 
 from deeptutor.partners.config.paths import (
+    _base_dir_for_owner,
     get_data_dir,
     get_partner_dir,
     get_partner_sessions_dir,
+    invalidate_owner_cache,
+    resolve_owner_for_partner,
 )
+from deeptutor.multi_user.paths import ADMIN_WORKSPACE_ROOT, USERS_ROOT
 from deeptutor.services.partners.runtime import PartnerRunner
 from deeptutor.services.partners.sessions import PartnerSessionStore
 from deeptutor.services.partners.workspace import (
@@ -41,13 +45,6 @@ LEGACY_GLOBAL_DELIVERY_KEYS = frozenset(
     {"send_progress", "send_tool_hints", "sendProgress", "sendToolHints"}
 )
 
-# Substrings (case-insensitive) on channel field names that flag a value as a
-# secret which must be masked before being serialised in non-edit responses.
-# Matches existing channel configs: telegram.token, slack.bot_token /
-# slack.app_token, discord.token, matrix.access_token, whatsapp.bridge_token,
-# mochat.claw_token, feishu.app_secret / encrypt_key / verification_token,
-# wecom.secret, qq.secret, dingtalk.client_secret, email.imap_password /
-# smtp_password, etc.
 _SECRET_FIELD_HINTS: tuple[str, ...] = (
     "token",
     "secret",
@@ -79,7 +76,7 @@ def mask_channel_secrets(channels: dict[str, Any]) -> dict[str, Any]:
         return value
 
     walked = _walk(channels)
-    if not isinstance(walked, dict):  # defensive — should not happen
+    if not isinstance(walked, dict):
         return {}
     return walked
 
@@ -97,7 +94,7 @@ def slugify_partner_id(name: str) -> str:
 
 
 def _optional_str_list(value: Any) -> list[str] | None:
-    """YAML field → ``None`` (absent / wrong type) or a list of strings."""
+    """YAML field -> ``None`` (absent / wrong type) or a list of strings."""
     if isinstance(value, list):
         return [str(item) for item in value]
     return None
@@ -111,46 +108,24 @@ class PartnerConfig:
     description: str = ""
     channels: dict[str, Any] = field(default_factory=dict)
     llm_selection: dict[str, str] | None = None
-    # Fallback model: when a turn fails outright on the primary selection
-    # (LLM error, no output), the runner re-runs the turn once with this.
     backup_llm_selection: dict[str, str] | None = None
-    model: str | None = None  # legacy TutorBot model-string override
+    model: str | None = None
     language: str = ""
     emoji: str = ""
     color: str = ""
-    # Custom avatar as a compact data URL (image/svg, client-resized) —
-    # kept inline in config so <img> rendering needs no authenticated
-    # file endpoint. Takes precedence over emoji/color when set.
     avatar: str = ""
-    soul_origin: dict[str, str] = field(default_factory=dict)  # {"type","id"} provenance
-    # User-toggleable system tools (same pool as the chat composer /
-    # /settings/tools). None = all of them; [] = none; list = whitelist.
+    soul_origin: dict[str, str] = field(default_factory=dict)
     enabled_tools: list[str] | None = None
-    # Allowed built-in (auto-mounted) tools — rag / read_memory / web_fetch /
-    # … (CONFIGURABLE_BUILTIN_TOOL_NAMES). None = no gating (all mount under
-    # their usual context condition, like the product chat); [] = deny every
-    # built-in; list = whitelist. Lets an owner deny e.g. memory to an
-    # IM-facing partner.
     builtin_tools: list[str] | None = None
-    # Configured MCP tools the partner may load. None = all; [] = MCP off.
     mcp_tools: list[str] | None = None
+    # Owner of this partner - empty string for admin, user id for user-owned.
+    owner_id: str = ""
 
 
 @dataclass
 class LiveTurn:
-    """A web turn decoupled from any single WebSocket connection.
+    """A web turn decoupled from any single WebSocket connection."""
 
-    The turn runs as a task on the partner instance and fans its stream frames
-    out to per-subscriber queues, buffering them too. A client that reconnects
-    mid-turn (a page refresh) re-subscribes and replays the buffer, so the
-    in-progress answer survives the reload instead of dying with the old
-    socket. Frames are the same shapes the socket already sends
-    (``stream_event`` / ``content`` / ``done`` / ``stopped`` / ``error``).
-    """
-
-    # The user message that opened the turn, so a client reattaching after a
-    # refresh can re-show the question bubble (it isn't persisted until the
-    # turn completes).
     user_content: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
     terminal: list[dict[str, Any]] = field(default_factory=list)
@@ -172,8 +147,6 @@ class LiveTurn:
         self.subscribers.clear()
 
     def subscribe(self) -> asyncio.Queue:
-        """Preload the backlog and register — atomically (no await between) so
-        no frame is missed or duplicated at the boundary."""
         queue: asyncio.Queue = asyncio.Queue()
         for frame in (*self.events, *self.terminal):
             queue.put_nowait(frame)
@@ -196,8 +169,6 @@ class PartnerInstance:
     channel_bindings: dict[str, str] = field(default_factory=dict)
     reload_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     last_reload_error: str | None = None
-    # In-flight web turns by session_key, decoupled from the socket so a
-    # refresh can reattach (see :class:`LiveTurn`).
     live_turns: dict[str, LiveTurn] = field(default_factory=dict, repr=False)
 
     @property
@@ -210,9 +181,6 @@ class PartnerInstance:
         include_secrets: bool = False,
         mask_secrets: bool = False,
     ) -> dict[str, Any]:
-        """Serialise to a JSON-friendly dict (channel shapes as in TutorBot:
-        names-only by default, masked dict for detail views, raw only for the
-        explicitly-opt-in edit form)."""
         source_channels = strip_legacy_global_delivery(self.config.channels)
         if include_secrets:
             channels: Any = source_channels
@@ -237,6 +205,7 @@ class PartnerInstance:
             "enabled_tools": self.config.enabled_tools,
             "builtin_tools": self.config.builtin_tools,
             "mcp_tools": self.config.mcp_tools,
+            "owner_id": self.config.owner_id,
             "running": self.running,
             "started_at": self.started_at.isoformat(),
             "last_reload_error": self.last_reload_error,
@@ -251,34 +220,36 @@ class PartnerManager:
         self._stores: dict[str, PartnerSessionStore] = {}
         self._migrated_legacy = False
 
-    # ── Path helpers ──────────────────────────────────────────────
+    # -- Path helpers --
 
     @property
     def _partners_dir(self) -> Path:
         return get_data_dir()
 
-    def _partner_dir(self, partner_id: str) -> Path:
-        return self._partners_dir / partner_id
+    def _partner_dir(self, partner_id: str, *, owner_id: str = "") -> Path:
+        return _base_dir_for_owner(owner_id) / partner_id
 
-    def session_store(self, partner_id: str) -> PartnerSessionStore:
-        store = self._stores.get(partner_id)
+    def session_store(self, partner_id: str, *, owner_id: str = "") -> PartnerSessionStore:
+        cache_key = f"{owner_id}:{partner_id}"
+        store = self._stores.get(cache_key)
         if store is None:
-            store = PartnerSessionStore(get_partner_sessions_dir(partner_id))
-            self._stores[partner_id] = store
+            store = PartnerSessionStore(get_partner_sessions_dir(partner_id, owner_id=owner_id))
+            self._stores[cache_key] = store
         return store
 
-    def _ensure_partner_dirs(self, partner_id: str) -> None:
-        get_partner_dir(partner_id)
-        ensure_partner_workspace(partner_id)
-        get_partner_sessions_dir(partner_id)
-        if not read_soul(partner_id).strip():
-            write_soul(partner_id, DEFAULT_SOUL)
+    def _ensure_partner_dirs(self, partner_id: str, *, owner_id: str = "") -> None:
+        get_partner_dir(partner_id, owner_id=owner_id)
+        ensure_partner_workspace(partner_id, owner_id=owner_id)
+        get_partner_sessions_dir(partner_id, owner_id=owner_id)
+        if not read_soul(partner_id, owner_id=owner_id).strip():
+            write_soul(partner_id, DEFAULT_SOUL, owner_id=owner_id)
 
-    # ── Config persistence ────────────────────────────────────────
+    # -- Config persistence --
 
     # Every PartnerConfig field must be listed here so merge_config can update
     # it via the API; a field omitted here is silently un-updatable.
-    # auto_start is intentionally absent — lifecycle state, not config.
+    # auto_start is intentionally absent - lifecycle state, not config.
+    # owner_id is intentionally absent - identity field, not mergeable config.
     _MERGEABLE_FIELDS = (
         "name",
         "description",
@@ -296,8 +267,8 @@ class PartnerManager:
         "mcp_tools",
     )
 
-    def load_config(self, partner_id: str) -> PartnerConfig | None:
-        path = self._partner_dir(partner_id) / "config.yaml"
+    def load_config(self, partner_id: str, *, owner_id: str = "") -> PartnerConfig | None:
+        path = self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml"
         if not path.exists():
             return None
         try:
@@ -317,24 +288,30 @@ class PartnerManager:
                 enabled_tools=_optional_str_list(data.get("enabled_tools")),
                 builtin_tools=_optional_str_list(data.get("builtin_tools")),
                 mcp_tools=_optional_str_list(data.get("mcp_tools")),
+                owner_id=str(data.get("owner_id", "") or ""),
             )
         except Exception:
             logger.exception("Failed to load partner config %s", partner_id)
             return None
 
     def save_config(
-        self, partner_id: str, config: PartnerConfig, *, auto_start: bool | None = None
+        self,
+        partner_id: str,
+        config: PartnerConfig,
+        *,
+        auto_start: bool | None = None,
+        owner_id: str = "",
     ) -> None:
-        """Persist atomically (write-temp + replace).
-
-        ``auto_start`` is the persisted intent to launch on backend boot,
-        managed separately from config fields (same contract as TutorBot —
-        ``None`` preserves the on-disk value; a brand-new partner defaults to
-        ``True``)."""
-        partner_dir = self._partner_dir(partner_id)
+        """Persist atomically (write-temp + replace)."""
+        effective_owner = config.owner_id or owner_id
+        partner_dir = self._partner_dir(partner_id, owner_id=effective_owner)
         path = partner_dir / "config.yaml"
         if auto_start is None:
-            auto_start = self._load_auto_start(partner_id, default=False) if path.exists() else True
+            auto_start = (
+                self._load_auto_start(partner_id, default=False, owner_id=effective_owner)
+                if path.exists()
+                else True
+            )
         partner_dir.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {
             "name": config.name,
@@ -346,6 +323,7 @@ class PartnerManager:
             "avatar": config.avatar,
             "soul_origin": config.soul_origin,
             "auto_start": auto_start,
+            "owner_id": config.owner_id,
         }
         if config.llm_selection:
             data["llm_selection"] = config.llm_selection
@@ -364,8 +342,8 @@ class PartnerManager:
         tmp_path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
         tmp_path.replace(path)
 
-    def _load_auto_start(self, partner_id: str, *, default: bool = False) -> bool:
-        path = self._partner_dir(partner_id) / "config.yaml"
+    def _load_auto_start(self, partner_id: str, *, default: bool = False, owner_id: str = "") -> bool:
+        path = self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml"
         if not path.exists():
             return default
         try:
@@ -375,15 +353,12 @@ class PartnerManager:
             logger.exception("Failed to load auto_start flag for partner '%s'", partner_id)
             return default
 
-    def auto_start_enabled(self, partner_id: str, *, default: bool = False) -> bool:
+    def auto_start_enabled(self, partner_id: str, *, default: bool = False, owner_id: str = "") -> bool:
         """Return whether this partner is allowed to start without an explicit user action."""
-        return self._load_auto_start(partner_id, default=default)
+        return self._load_auto_start(partner_id, default=default, owner_id=owner_id)
 
     def merge_config(self, partner_id: str, overrides: dict[str, Any]) -> PartnerConfig:
-        """Overlay non-``None`` overrides onto the on-disk config.
-
-        Empty strings / dicts are intentional clears and DO override —
-        callers must use ``None`` to mean "leave as-is"."""
+        """Overlay non-``None`` overrides onto the on-disk config."""
         existing = self.load_config(partner_id)
         base = existing or PartnerConfig(name=partner_id)
         for key in self._MERGEABLE_FIELDS:
@@ -391,26 +366,27 @@ class PartnerManager:
                 setattr(base, key, overrides[key])
         return base
 
-    # ── Lifecycle ─────────────────────────────────────────────────
+    # -- Lifecycle --
 
     async def start_partner(
-        self, partner_id: str, config: PartnerConfig | None = None
+        self, partner_id: str, config: PartnerConfig | None = None, *, owner_id: str = ""
     ) -> PartnerInstance:
         if partner_id in self._partners and self._partners[partner_id].running:
             return self._partners[partner_id]
 
-        self._ensure_partner_dirs(partner_id)
+        effective_owner = (config.owner_id if config else "") or owner_id
+        self._ensure_partner_dirs(partner_id, owner_id=effective_owner)
 
         if config is None:
-            config = self.load_config(partner_id)
+            config = self.load_config(partner_id, owner_id=effective_owner)
         if config is None:
-            config = PartnerConfig(name=partner_id)
-            self.save_config(partner_id, config)
+            config = PartnerConfig(name=partner_id, owner_id=effective_owner)
+            self.save_config(partner_id, config, owner_id=effective_owner)
 
         from deeptutor.partners.bus.queue import MessageBus
 
         bus = MessageBus()
-        store = self.session_store(partner_id)
+        store = self.session_store(partner_id, owner_id=effective_owner)
         runner = PartnerRunner(partner_id, config, bus, store, save_config=self.save_config)
 
         try:
@@ -440,15 +416,11 @@ class PartnerManager:
                 )
 
         self._partners[partner_id] = instance
-        # Omit auto_start so save_config preserves the persisted intent: a
-        # lazy start (web chat) of an auto_start:false partner must not
-        # silently re-enable auto-start.
-        self.save_config(partner_id, config)
+        self.save_config(partner_id, config, owner_id=effective_owner)
         logger.info("Partner '%s' started", partner_id)
         return instance
 
     async def _outbound_router(self, partner_id: str, bus: Any, instance: PartnerInstance) -> None:
-        """Route outbound messages to channels, web notify_queue, and EventBus."""
         try:
             from deeptutor.events.event_bus import Event, EventType, get_event_bus
             from deeptutor.partners.bus.events import OutboundMessage as _OMsg
@@ -493,16 +465,18 @@ class PartnerManager:
         except Exception:
             logger.exception("Outbound router failed for partner %s", partner_id)
 
-    async def stop_partner(self, partner_id: str, *, preserve_auto_start: bool = False) -> bool:
-        """Stop a running partner.
-
-        Manual stops disable future auto-starts; process shutdown preserves
-        the persisted intent so host restarts bring the same partners back."""
+    async def stop_partner(
+        self, partner_id: str, *, preserve_auto_start: bool = False, owner_id: str = ""
+    ) -> bool:
+        """Stop a running partner."""
         instance = self._partners.get(partner_id)
         if not instance:
             return False
+        effective_owner = instance.config.owner_id or owner_id
         auto_start = (
-            self._load_auto_start(partner_id, default=True) if preserve_auto_start else False
+            self._load_auto_start(partner_id, default=True, owner_id=effective_owner)
+            if preserve_auto_start
+            else False
         )
 
         for task in instance.tasks:
@@ -520,7 +494,7 @@ class PartnerManager:
             except Exception:
                 logger.exception("Error stopping channels for partner '%s'", partner_id)
 
-        self.save_config(partner_id, instance.config, auto_start=auto_start)
+        self.save_config(partner_id, instance.config, auto_start=auto_start, owner_id=effective_owner)
         del self._partners[partner_id]
         logger.info("Partner '%s' stopped (auto_start=%s)", partner_id, auto_start)
         return True
@@ -543,6 +517,10 @@ class PartnerManager:
         if not manager.channels:
             logger.info("No channels matched config for partner '%s'", partner_id)
             return None
+        # 注入 partner_id / owner_id 到各 channel 实例，使媒体/状态文件按 partner 隔离
+        for ch in manager.channels.values():
+            ch.partner_id = partner_id
+            ch.owner_id = getattr(config, "owner_id", "") or ""
         logger.info(
             "Channels enabled for partner '%s': %s",
             partner_id,
@@ -551,12 +529,6 @@ class PartnerManager:
         return manager
 
     async def reload_channels(self, partner_id: str) -> None:
-        """Restart channel listeners from ``instance.config.channels``.
-
-        Cancels only ``partner:{id}:ch:*`` tasks; runner and router keep
-        running. Serialised per partner via ``instance.reload_lock``. On
-        failure the listeners stay down and the error is recorded on
-        ``instance.last_reload_error`` for the UI."""
         instance = self._partners.get(partner_id)
         if not instance or not instance.running:
             return
@@ -617,31 +589,66 @@ class PartnerManager:
         instance.channel_manager = None
         instance.channel_bindings.clear()
 
-    # ── Listing & discovery ───────────────────────────────────────
+    # -- Listing & discovery --
 
     def _discover_partner_ids(self) -> set[str]:
         self._migrate_legacy_tutorbot()
         ids: set[str] = set()
-        if not self._partners_dir.exists():
-            return ids
-        for entry in self._partners_dir.iterdir():
-            if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
-                continue
-            if entry.is_dir() and (entry / "config.yaml").exists():
-                ids.add(entry.name)
+
+        # Scan admin directory
+        admin_partners = ADMIN_WORKSPACE_ROOT / "partners"
+        if admin_partners.is_dir():
+            for entry in admin_partners.iterdir():
+                if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
+                    continue
+                if entry.is_dir() and (entry / "config.yaml").exists():
+                    ids.add(entry.name)
+
+        # Scan user directories
+        if USERS_ROOT.is_dir():
+            for user_entry in USERS_ROOT.iterdir():
+                if not user_entry.is_dir():
+                    continue
+                user_partners = user_entry / "partners"
+                if not user_partners.is_dir():
+                    continue
+                for entry in user_partners.iterdir():
+                    if entry.name in _RESERVED_NAMES or entry.name.startswith((".", "_")):
+                        continue
+                    if entry.is_dir() and (entry / "config.yaml").exists():
+                        ids.add(entry.name)
+
+        invalidate_owner_cache()
         return ids
 
-    def list_partners(self) -> list[dict[str, Any]]:
-        """All known partners (running + configured on disk); channels keys-only."""
+    def list_partners(self, *, owner_id: str | None = None) -> list[dict[str, Any]]:
+        """All known partners (running + configured on disk); channels keys-only.
+
+        ``owner_id`` filtering:
+          - ``None`` -> return all (backward compatible)
+          - ``""`` -> only admin partners
+          - non-empty -> only that user's partners
+        """
         result: dict[str, dict[str, Any]] = {}
 
+        def _matches(cfg_owner: str) -> bool:
+            if owner_id is None:
+                return True
+            return cfg_owner == owner_id
+
         for inst in self._partners.values():
+            if not _matches(inst.config.owner_id):
+                continue
             result[inst.partner_id] = inst.to_dict()
 
         for pid in self._discover_partner_ids():
             if pid in result:
                 continue
-            cfg = self.load_config(pid)
+            pid_owner = resolve_owner_for_partner(pid)
+            cfg = self.load_config(pid, owner_id=pid_owner)
+            cfg_owner = cfg.owner_id if cfg else ""
+            if not _matches(cfg_owner):
+                continue
             result[pid] = {
                 "partner_id": pid,
                 "name": cfg.name if cfg else pid,
@@ -658,6 +665,7 @@ class PartnerManager:
                 "enabled_tools": cfg.enabled_tools if cfg else None,
                 "builtin_tools": cfg.builtin_tools if cfg else None,
                 "mcp_tools": cfg.mcp_tools if cfg else None,
+                "owner_id": cfg_owner,
                 "running": False,
                 "started_at": None,
             }
@@ -667,8 +675,8 @@ class PartnerManager:
     def get_partner(self, partner_id: str) -> PartnerInstance | None:
         return self._partners.get(partner_id)
 
-    def partner_exists(self, partner_id: str) -> bool:
-        return (self._partner_dir(partner_id) / "config.yaml").exists()
+    def partner_exists(self, partner_id: str, *, owner_id: str = "") -> bool:
+        return (self._partner_dir(partner_id, owner_id=owner_id) / "config.yaml").exists()
 
     @staticmethod
     def web_session_key(
@@ -683,21 +691,27 @@ class PartnerManager:
         return f"partner:{partner_id}"
 
     def get_history(
-        self, partner_id: str, *, session_key: str | None = None, limit: int = 100
+        self, partner_id: str, *, session_key: str | None = None, limit: int = 100,
+        owner_id: str = "",
     ) -> list[dict[str, Any]]:
-        store = self.session_store(partner_id)
+        store = self.session_store(partner_id, owner_id=owner_id)
         if session_key:
             return store.messages(session_key, limit=limit)
         return store.merged_messages(limit=limit)
 
-    def get_recent_active_partners(self, limit: int = 3) -> list[dict[str, Any]]:
+    def get_recent_active_partners(
+        self, limit: int = 3, *, owner_id: str | None = None
+    ) -> list[dict[str, Any]]:
         activity: list[tuple[str, dict[str, Any]]] = []
         for pid in self._discover_partner_ids():
-            sessions = self.session_store(pid).list_sessions()
+            pid_owner = resolve_owner_for_partner(pid)
+            if owner_id is not None and pid_owner != owner_id:
+                continue
+            sessions = self.session_store(pid, owner_id=pid_owner).list_sessions()
             if not sessions:
                 continue
             newest = sessions[0]
-            cfg = self.load_config(pid)
+            cfg = self.load_config(pid, owner_id=pid_owner)
             instance = self._partners.get(pid)
             activity.append(
                 (
@@ -714,7 +728,7 @@ class PartnerManager:
         activity.sort(key=lambda item: item[0], reverse=True)
         return [item[1] for item in activity[:limit]]
 
-    # ── Messaging (web entry point) ───────────────────────────────
+    # -- Messaging (web entry point) --
 
     async def send_message(
         self,
@@ -726,12 +740,6 @@ class PartnerManager:
         on_event: Callable[[Any], Awaitable[None]] | None = None,
         session_key: str | None = None,
     ) -> str:
-        """Send a web message to a running partner and return the reply.
-
-        ``session_key``, when given, is used verbatim (the web app drives a
-        stable, colon-free key it persists locally); otherwise it is derived
-        from ``session_id`` / ``chat_id`` via :meth:`web_session_key`.
-        """
         instance = self._partners.get(partner_id)
         if not instance or not instance.running or not instance.runner:
             raise RuntimeError(f"Partner '{partner_id}' is not running")
@@ -753,7 +761,7 @@ class PartnerManager:
         )
         return await instance.runner.process_message(msg, on_event=on_event)
 
-    # ── Live web turns (refresh-survivable streaming) ─────────────
+    # -- Live web turns (refresh-survivable streaming) --
 
     def start_web_turn(
         self,
@@ -762,11 +770,6 @@ class PartnerManager:
         content: str,
         media: list[str] | None = None,
     ) -> "LiveTurn":
-        """Run a web turn as an instance-owned task and return its LiveTurn.
-
-        If a turn is already in flight for this session, returns it (one at a
-        time per session). The turn keeps running even if every socket detaches.
-        """
         instance = self._partners.get(partner_id)
         if not instance or not instance.running or not instance.runner:
             raise RuntimeError(f"Partner '{partner_id}' is not running")
@@ -782,8 +785,6 @@ class PartnerManager:
         return turn
 
     def subscribe_web_turn(self, partner_id: str, session_key: str) -> "LiveTurn | None":
-        """The in-flight turn for a session, or None (completed turns are read
-        back from history instead)."""
         instance = self._partners.get(partner_id)
         if not instance:
             return None
@@ -825,7 +826,7 @@ class PartnerManager:
             raise
         except RuntimeError as exc:
             turn.finish([{"type": "error", "content": str(exc)}, {"type": "done"}])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("Web turn crashed for partner '%s'", partner_id)
             turn.finish(
                 [
@@ -834,41 +835,44 @@ class PartnerManager:
                 ]
             )
 
-    # ── Session lifecycle (web management) ────────────────────────
+    # -- Session lifecycle (web management) --
 
-    def resume_session(self, partner_id: str, session_key: str) -> dict[str, Any] | None:
+    def resume_session(
+        self, partner_id: str, session_key: str, *, owner_id: str = ""
+    ) -> dict[str, Any] | None:
         """Clear a session's archived flag so it becomes current again."""
-        store = self.session_store(partner_id)
+        store = self.session_store(partner_id, owner_id=owner_id)
         store.set_archived(session_key, False)
         for session in store.list_sessions():
             if session["session_key"] == store._stem(session_key):
                 return session
         return None
 
-    def delete_session(self, partner_id: str, session_key: str) -> bool:
-        return self.session_store(partner_id).delete_session(session_key)
+    def delete_session(self, partner_id: str, session_key: str, *, owner_id: str = "") -> bool:
+        return self.session_store(partner_id, owner_id=owner_id).delete_session(session_key)
 
     def branch_session(
-        self, partner_id: str, source_key: str, new_key: str
+        self, partner_id: str, source_key: str, new_key: str, *, owner_id: str = ""
     ) -> dict[str, Any] | None:
-        return self.session_store(partner_id).branch(source_key, new_key)
+        return self.session_store(partner_id, owner_id=owner_id).branch(source_key, new_key)
 
-    def archive_session(self, partner_id: str, session_key: str) -> None:
-        self.session_store(partner_id).set_archived(session_key, True)
+    def archive_session(self, partner_id: str, session_key: str, *, owner_id: str = "") -> None:
+        self.session_store(partner_id, owner_id=owner_id).set_archived(session_key, True)
 
-    # ── Boot / shutdown ───────────────────────────────────────────
+    # -- Boot / shutdown --
 
     async def auto_start_partners(self) -> None:
         for pid in self._discover_partner_ids():
             if pid in self._partners and self._partners[pid].running:
                 continue
             try:
-                if not self._load_auto_start(pid, default=False):
+                owner = resolve_owner_for_partner(pid)
+                if not self._load_auto_start(pid, default=False, owner_id=owner):
                     continue
-                config = self.load_config(pid)
+                config = self.load_config(pid, owner_id=owner)
                 if config is None:
                     continue
-                await self.start_partner(pid, config)
+                await self.start_partner(pid, config, owner_id=owner)
                 logger.info("Auto-started partner '%s'", pid)
             except Exception:
                 logger.exception("Failed to auto-start partner '%s'", pid)
@@ -877,31 +881,28 @@ class PartnerManager:
         for partner_id in list(self._partners.keys()):
             await self.stop_partner(partner_id, preserve_auto_start=preserve_auto_start)
 
-    async def destroy_partner(self, partner_id: str) -> bool:
-        await self.stop_partner(partner_id, preserve_auto_start=False)
-        self._stores.pop(partner_id, None)
+    async def destroy_partner(self, partner_id: str, *, owner_id: str = "") -> bool:
+        await self.stop_partner(partner_id, preserve_auto_start=False, owner_id=owner_id)
+        cache_key = f"{owner_id}:{partner_id}"
+        self._stores.pop(cache_key, None)
         try:
             from deeptutor.services.cron import get_cron_service
 
             get_cron_service().remove_owner_jobs(f"partner:{partner_id}")
         except Exception:
             logger.warning("Failed to clear cron jobs for '%s'", partner_id, exc_info=True)
-        partner_dir = self._partner_dir(partner_id)
+        partner_dir = self._partner_dir(partner_id, owner_id=owner_id)
         if not partner_dir.exists():
             return False
         shutil.rmtree(partner_dir)
+        invalidate_owner_cache(partner_id)
         logger.info("Partner '%s' destroyed (data deleted)", partner_id)
         return True
 
-    # ── Legacy TutorBot migration ─────────────────────────────────
+    # -- Legacy TutorBot migration --
 
     def _migrate_legacy_tutorbot(self) -> None:
-        """One-shot migration of ``data/tutorbot/`` bots into partners.
-
-        Channel configs (with secrets), LLM selection, and souls survive;
-        the old engine's bootstrap files do not. ``persona`` becomes the
-        partner's SOUL.md. The legacy tree is left in place untouched so the
-        migration is non-destructive."""
+        """One-shot migration of ``data/tutorbot/`` bots into partners."""
         if self._migrated_legacy:
             return
         self._migrated_legacy = True
@@ -926,7 +927,7 @@ class PartnerManager:
             if not legacy_config.is_file():
                 continue
             partner_id = entry.name
-            if (self._partner_dir(partner_id) / "config.yaml").exists():
+            if (self._partner_dir(partner_id, owner_id="") / "config.yaml").exists():
                 continue
             try:
                 data = yaml.safe_load(legacy_config.read_text(encoding="utf-8")) or {}
@@ -938,14 +939,14 @@ class PartnerManager:
                     model=data.get("model"),
                     soul_origin={"type": "tutorbot", "id": partner_id},
                 )
-                self._ensure_partner_dirs(partner_id)
+                self._ensure_partner_dirs(partner_id, owner_id="")
                 persona = str(data.get("persona", "") or "").strip()
                 if persona:
-                    write_soul(partner_id, persona)
-                self.save_config(partner_id, config, auto_start=bool(data.get("auto_start", False)))
+                    write_soul(partner_id, persona, owner_id="")
+                self.save_config(partner_id, config, auto_start=bool(data.get("auto_start", False)), owner_id="")
                 legacy_sessions = entry / "workspace" / "sessions"
                 if legacy_sessions.is_dir():
-                    dst = get_partner_sessions_dir(partner_id)
+                    dst = get_partner_sessions_dir(partner_id, owner_id="")
                     for jsonl in legacy_sessions.glob("*.jsonl"):
                         target = dst / jsonl.name
                         if not target.exists():
@@ -954,7 +955,7 @@ class PartnerManager:
             except Exception:
                 logger.exception("Failed to migrate TutorBot '%s'", partner_id)
 
-    # ── Soul template library ─────────────────────────────────────
+    # -- Soul template library --
 
     @property
     def _souls_file(self) -> Path:
@@ -1024,149 +1025,36 @@ class PartnerManager:
         return True
 
 
-# ── Default soul templates ────────────────────────────────────────
-#
-# Seeded into a fresh library, and used to refresh untouched copies of the
-# old seeds (see ``_refresh_stale_default_souls``). Partners live in IM
-# channels, so every template bakes in a chat-sized voice.
+# -- Default soul templates --
 
 DEFAULT_SOUL_TEMPLATES: tuple[dict[str, str], ...] = (
     {
         "id": "companion",
         "name": "Learning Companion",
-        "content": """# Soul
-
-I am a learning companion — a steady, curious presence that helps people
-actually understand things, not just collect answers.
-
-## Voice
-
-- Warm, direct, and concrete; no lecture-hall tone
-- Chat-sized messages: one idea at a time, short paragraphs
-- Plain words first, precise terms second — I define jargon the moment I use it
-
-## How I help
-
-- Start from what you already know, then build exactly one step up
-- Prefer a worked example over an abstract explanation
-- Check understanding with one small question, never a quiz barrage
-- When I don't know, I say so and find out — accuracy beats fluency
-
-## Boundaries
-
-- On homework-style questions I guide before I reveal: hint, stronger hint, then the step
-- I keep your pace — encouragement, never condescension
-""",
+        "content": "# Soul\n\nI am a learning companion \u2014 a steady, curious presence that helps people\nactually understand things, not just collect answers.\n\n## Voice\n\n- Warm, direct, and concrete; no lecture-hall tone\n- Chat-sized messages: one idea at a time, short paragraphs\n- Plain words first, precise terms second \u2014 I define jargon the moment I use it\n\n## How I help\n\n- Start from what you already know, then build exactly one step up\n- Prefer a worked example over an abstract explanation\n- Check understanding with one small question, never a quiz barrage\n- When I don't know, I say so and find out \u2014 accuracy beats fluency\n\n## Boundaries\n\n- On homework-style questions I guide before I reveal: hint, stronger hint, then the step\n- I keep your pace \u2014 encouragement, never condescension\n",
     },
     {
         "id": "math-tutor",
         "name": "Math Tutor",
-        "content": """# Soul
-
-I am a math tutor. What I'm after is the moment it clicks — not the answer itself.
-
-## Voice
-
-- Calm and unhurried; math anxiety is real and I never feed it
-- Small steps, one per message, written to be read in a chat window
-- Notation when it sharpens the idea, words when they're clearer
-
-## Method
-
-- Diagnose first: where exactly does your reasoning break?
-- Socratic by default — a nudge, then a stronger hint, then the step itself
-- Always ask "why does this rule work", not just "apply this rule"
-- After we solve it, one quick variation to confirm it actually clicked
-
-## Habits
-
-- Estimate before computing; sanity-check after
-- A wrong answer is information, not failure — we find the good idea inside it
-""",
+        "content": "# Soul\n\nI am a math tutor. What I'm after is the moment it clicks \u2014 not the answer itself.\n\n## Voice\n\n- Calm and unhurried; math anxiety is real and I never feed it\n- Small steps, one per message, written to be read in a chat window\n- Notation when it sharpens the idea, words when they're clearer\n\n## Method\n\n- Diagnose first: where exactly does your reasoning break?\n- Socratic by default \u2014 a nudge, then a stronger hint, then the step itself\n- Always ask \"why does this rule work\", not just \"apply this rule\"\n- After we solve it, one quick variation to confirm it actually clicked\n\n## Habits\n\n- Estimate before computing; sanity-check after\n- A wrong answer is information, not failure \u2014 we find the good idea inside it\n",
     },
     {
         "id": "coding-assistant",
         "name": "Coding Assistant",
-        "content": """# Soul
-
-I am a coding assistant — a pragmatic pair programmer living in your chat.
-
-## Voice
-
-- Precise and to the point: the snippet that matters, not a wall of code
-- Code speaks first, prose explains why
-- Honest about uncertainty and trade-offs — no hand-waving
-
-## Craft
-
-- Read before writing: respect the existing style and constraints
-- Smallest change that solves the problem; name the trade-off when there is one
-- Errors and edge cases are part of the answer, not an afterthought
-- Every fix ships with a way to verify it — a test, a command, an expected output
-
-## Boundaries
-
-- I don't guess APIs; when unsure I say so and show how to check
-""",
+        "content": "# Soul\n\nI am a coding assistant \u2014 a pragmatic pair programmer living in your chat.\n\n## Voice\n\n- Precise and to the point: the snippet that matters, not a wall of code\n- Code speaks first, prose explains why\n- Honest about uncertainty and trade-offs \u2014 no hand-waving\n\n## Craft\n\n- Read before writing: respect the existing style and constraints\n- Smallest change that solves the problem; name the trade-off when there is one\n- Errors and edge cases are part of the answer, not an afterthought\n- Every fix ships with a way to verify it \u2014 a test, a command, an expected output\n\n## Boundaries\n\n- I don't guess APIs; when unsure I say so and show how to check\n",
     },
     {
         "id": "research-helper",
         "name": "Research Helper",
-        "content": """# Soul
-
-I am a research helper. I turn vague questions into answerable ones, and
-answers into something you can actually trust.
-
-## Voice
-
-- Neutral and curious; I argue with evidence, not adjectives
-- Structured replies sized for chat: the claim, the evidence, what's still open
-
-## Method
-
-- Decompose broad questions into specific sub-questions before searching
-- Separate established findings, active debate, and speculation — and label which is which
-- Prefer primary sources; cite what I rely on so you can check it
-- Steelman the opposing reading before settling a question
-
-## Honesty
-
-- "The evidence is thin here" is a finding, not an apology
-- I flag my own uncertainty instead of smoothing it over
-""",
+        "content": "# Soul\n\nI am a research helper. I turn vague questions into answerable ones, and\nanswers into something you can actually trust.\n\n## Voice\n\n- Neutral and curious; I argue with evidence, not adjectives\n- Structured replies sized for chat: the claim, the evidence, what's still open\n\n## Method\n\n- Decompose broad questions into specific sub-questions before searching\n- Separate established findings, active debate, and speculation \u2014 and label which is which\n- Prefer primary sources; cite what I rely on so you can check it\n- Steelman the opposing reading before settling a question\n\n## Honesty\n\n- \"The evidence is thin here\" is a finding, not an apology\n- I flag my own uncertainty instead of smoothing it over\n",
     },
     {
         "id": "language-tutor",
         "name": "Language Tutor",
-        "content": """# Soul
-
-I am a language tutor. You learn a language by using it — so this chat is
-the classroom.
-
-## Voice
-
-- Friendly and a little playful; mistakes are welcome here
-- I match your level: simple words for beginners, nuance as you grow
-
-## Method
-
-- Converse first, correct second: I respond to what you said, then gently fix how you said it
-- One correction at a time, with a one-line why
-- Phrases in context, never isolated word lists
-- I recycle yesterday's vocabulary into today's conversation
-
-## Habits
-
-- I celebrate attempts at structures we haven't covered yet
-- Ask me "how do I say X" and you get the natural phrasing, not the literal one
-""",
+        "content": "# Soul\n\nI am a language tutor. You learn a language by using it \u2014 so this chat is\nthe classroom.\n\n## Voice\n\n- Friendly and a little playful; mistakes are welcome here\n- I match your level: simple words for beginners, nuance as you grow\n\n## Method\n\n- Converse first, correct second: I respond to what you said, then gently fix how you said it\n- One correction at a time, with a one-line why\n- Phrases in context, never isolated word lists\n- I recycle yesterday's vocabulary into today's conversation\n\n## Habits\n\n- I celebrate attempts at structures we haven't covered yet\n- Ask me \"how do I say X\" and you get the natural phrasing, not the literal one\n",
     },
 )
 
-# Verbatim texts of retired seeds (including the TutorBot-era variants).
-# A library entry that still matches one of these — or that sits on a seed
-# id and still mentions TutorBot — is an untouched old seed: safe to swap
-# for the current template without losing any user writing.
 _TUTORBOT_SEED = (
     "# Soul\n\nI am TutorBot, a personal learning companion.\n\n"
     "## Personality\n\n- Helpful and friendly\n- Clear, encouraging, and patient\n"
@@ -1187,14 +1075,14 @@ _SUPERSEDED_SOUL_CONTENTS = frozenset(
         (
             "# Soul\n\nI am a coding assistant focused on helping developers write better software.\n\n"
             "## Personality\n\n- Precise and detail-oriented\n"
-            "- Pragmatic — working code over perfect code\n- Explains trade-offs clearly\n\n"
+            "- Pragmatic \u2014 working code over perfect code\n- Explains trade-offs clearly\n\n"
             "## Approach\n\n- Read before writing; understand context first\n"
             "- Suggest tests alongside implementations\n- Prefer standard patterns over clever tricks"
         ),
         (
             "# Soul\n\nI am a research assistant helping users explore academic topics in depth.\n\n"
             "## Personality\n\n- Curious and thorough\n"
-            "- Balanced — presents multiple perspectives\n- Cites sources when possible\n\n"
+            "- Balanced \u2014 presents multiple perspectives\n- Cites sources when possible\n\n"
             "## Approach\n\n- Decompose broad questions into focused sub-questions\n"
             "- Distinguish established facts from open questions\n- Suggest further reading"
         ),
@@ -1207,7 +1095,6 @@ _SUPERSEDED_SOUL_CONTENTS = frozenset(
         ),
     }
 )
-# TutorBot-era libraries shipped the default under these ids.
 _LEGACY_SOUL_ID_ALIASES = {"default-tutorbot": "companion", "default": "companion"}
 
 
@@ -1221,12 +1108,6 @@ def _is_stale_seed(entry: dict[str, str]) -> bool:
 def _refresh_stale_default_souls(
     souls: list[dict[str, str]],
 ) -> list[dict[str, str]] | None:
-    """Upgrade untouched old-seed entries in place; ``None`` if nothing changed.
-
-    Only entries on known seed ids (or their TutorBot-era aliases) are
-    touched, and only when their content is provably an old seed — user-
-    authored and user-edited souls pass through verbatim.
-    """
     defaults = {e["id"]: e for e in DEFAULT_SOUL_TEMPLATES}
     present_ids = {str(e.get("id") or "") for e in souls}
     out: list[dict[str, str]] = []
@@ -1239,9 +1120,9 @@ def _refresh_stale_default_souls(
             continue
         changed = True
         if canonical != sid and canonical in present_ids:
-            continue  # canonical entry exists separately; drop the legacy alias
+            continue
         if any(str(e.get("id")) == canonical for e in out):
-            continue  # a second alias already collapsed into this id
+            continue
         out.append(dict(defaults[canonical]))
         present_ids.add(canonical)
     return out if changed else None

@@ -72,8 +72,12 @@ class TestMergeSemantics:
         assert not hasattr(merged, "bogus")
 
     def test_mergeable_fields_match_partnerconfig_fields(self):
-        """Every config field must be mergeable via the API (anti-drift pin)."""
-        field_names = {f.name for f in dataclasses.fields(PartnerConfig)}
+        """Every config field must be mergeable via the API (anti-drift pin).
+
+        ``owner_id`` is intentionally excluded — it's set at creation time
+        and must not be overridable via merge_config.
+        """
+        field_names = {f.name for f in dataclasses.fields(PartnerConfig)} - {"owner_id"}
         assert set(PartnerManager._MERGEABLE_FIELDS) == field_names
 
 
@@ -204,3 +208,86 @@ class TestSoulLibraryRefresh:
         mgr._save_souls([dict(self._TUTORBOT_ENTRY)])
         first = mgr.list_souls()
         assert mgr.list_souls() == first
+
+
+class TestOwnerIsolation:
+    """多用户隔离：owner_id 的持久化、反查与路径解析。"""
+
+    def test_config_roundtrip_with_owner_id(self, partners_root):
+        """保存带 owner_id 的 config，加载后 owner_id 正确。"""
+        mgr = _mgr()
+        config = PartnerConfig(name="Ada", owner_id="u1")
+        mgr.save_config("ada", config, owner_id="u1")
+        loaded = mgr.load_config("ada", owner_id="u1")
+        assert loaded is not None
+        assert loaded.owner_id == "u1"
+
+    def test_legacy_config_defaults_to_empty_owner(self, partners_root):
+        """旧 config（无 owner_id 字段）加载后 owner_id == ''。"""
+        mgr = _mgr()
+        # 手写一个不带 owner_id 的旧格式 config
+        partner_dir = partners_root / "legacy"
+        partner_dir.mkdir(parents=True)
+        (partner_dir / "config.yaml").write_text(
+            yaml.dump({"name": "Legacy", "channels": {}}), encoding="utf-8"
+        )
+        loaded = mgr.load_config("legacy")
+        assert loaded is not None
+        assert loaded.owner_id == ""
+
+    def test_mergeable_fields_excludes_owner_id(self):
+        """owner_id 不参与 merge_config（由创建时确定，不可通过 API 修改）。"""
+        assert "owner_id" not in PartnerManager._MERGEABLE_FIELDS
+
+    def test_discover_partner_ids_scans_multiple_users(
+        self, partners_root, user_partners_root
+    ):
+        """admin 和用户目录下的 partner 都能被 _discover_partner_ids 发现。"""
+        mgr = _mgr()
+        # admin 目录下创建 partner
+        mgr.save_config("admin-bot", PartnerConfig(name="Admin Bot", owner_id=""))
+        # 用户 u1 目录下创建 partner
+        u1_root = user_partners_root("u1")
+        (u1_root / "user-bot").mkdir()
+        (u1_root / "user-bot" / "config.yaml").write_text(
+            yaml.dump({"name": "User Bot", "owner_id": "u1"}), encoding="utf-8"
+        )
+        ids = mgr._discover_partner_ids()
+        assert "admin-bot" in ids
+        assert "user-bot" in ids
+
+    def test_resolve_owner_id_caches_result(self, user_partners_root):
+        """resolve_owner_for_partner 返回正确 owner，且结果被缓存。"""
+        from deeptutor.partners.config.paths import (
+            _owner_cache,
+            resolve_owner_for_partner,
+        )
+
+        u1_root = user_partners_root("u1")
+        (u1_root / "p1").mkdir()
+        (u1_root / "p1" / "config.yaml").write_text(
+            yaml.dump({"name": "P1", "owner_id": "u1"}), encoding="utf-8"
+        )
+        # 第一次调用：扫描磁盘并缓存
+        assert resolve_owner_for_partner("p1") == "u1"
+        # 验证缓存已写入
+        assert _owner_cache.get("p1") == "u1"
+        # 第二次调用：应返回相同结果（走缓存）
+        assert resolve_owner_for_partner("p1") == "u1"
+
+    def test_resolve_owner_id_admin_fallback(self, partners_root):
+        """admin 目录下的 partner，resolve_owner_for_partner 返回空串。"""
+        from deeptutor.partners.config.paths import resolve_owner_for_partner
+
+        mgr = _mgr()
+        mgr.save_config("admin-bot", PartnerConfig(name="Admin Bot", owner_id=""))
+        assert resolve_owner_for_partner("admin-bot") == ""
+
+    def test_single_user_mode_path_unchanged(self, partners_root):
+        """owner_id='' 时 get_partner_dir 与单机模式路径一致。"""
+        from deeptutor.partners.config.paths import _base_dir, get_partner_dir
+
+        # owner_id='' 等价于不传 owner_id
+        assert get_partner_dir("p1", owner_id="") == get_partner_dir("p1")
+        # 且等于旧 _base_dir() / "p1"
+        assert get_partner_dir("p1", owner_id="") == _base_dir() / "p1"

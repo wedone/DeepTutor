@@ -23,6 +23,7 @@ import logging
 from typing import TYPE_CHECKING
 import uuid
 
+from deeptutor.multi_user.context import get_current_user_or_none
 from deeptutor.services.subagent.base import OnEvent, SubagentBackend
 from deeptutor.services.subagent.config import BackendConfig
 from deeptutor.services.subagent.types import (
@@ -84,15 +85,20 @@ class PartnerBackend(SubagentBackend):
 
         from deeptutor.services.partners import get_partner_manager
 
+        user = get_current_user_or_none()
+        owner_id = ""
+        if user and user.scope and user.role != "admin":
+            owner_id = user.scope.user_id
+
         manager = get_partner_manager()
-        if not manager.partner_exists(pid):
+        if not manager.partner_exists(pid, owner_id=owner_id):
             return ConsultResult(success=False, error=f"Partner '{pid}' no longer exists.")
 
         # Bring the partner online if it isn't already (auto-start partners are).
         instance = manager.get_partner(pid)
         if instance is None or not instance.running:
             try:
-                await manager.start_partner(pid)
+                await manager.start_partner(pid, owner_id=owner_id)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Failed to start partner %s for consult: %s", pid, exc)
                 return ConsultResult(success=False, error=f"Could not start partner '{pid}': {exc}")

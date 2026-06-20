@@ -32,6 +32,16 @@ def isolated_root(tmp_path, monkeypatch) -> Path:
     monkeypatch.setattr(paths, "USERS_ROOT", admin_root / "users")
     monkeypatch.setattr(paths, "SYSTEM_ROOT", admin_root / "system")
     monkeypatch.setattr(paths, "_path_services", {})
+
+    # manager.py imports ADMIN_WORKSPACE_ROOT / USERS_ROOT at module level
+    from deeptutor.services.partners import manager as _mgr_mod
+    monkeypatch.setattr(_mgr_mod, "ADMIN_WORKSPACE_ROOT", admin_root)
+    monkeypatch.setattr(_mgr_mod, "USERS_ROOT", admin_root / "users")
+
+    # Clear owner cache to avoid cross-test pollution
+    from deeptutor.partners.config.paths import invalidate_owner_cache
+    invalidate_owner_cache()
+
     admin_root.mkdir(parents=True, exist_ok=True)
     return admin_root
 
@@ -50,6 +60,24 @@ def client(isolated_root, monkeypatch) -> TestClient:
     app = FastAPI()
     app.include_router(partners_router_mod.router, prefix="/api/v1/partners")
     return TestClient(app)
+
+
+@pytest.fixture
+def user_client(client, monkeypatch):
+    """多用户测试辅助 fixture：返回一个工厂函数。
+
+    调用 ``user_client(uid)`` 会 monkeypatch ``_current_owner_id`` 为返回
+    ``uid`` 的函数，并返回 ``client``。``uid=""`` 恢复 admin 模式
+    （``_current_owner_id`` 返回空串）。依赖 ``client`` 以复用 manager 与
+    app 装配。
+    """
+    import deeptutor.api.routers.partners as partners_router_mod
+
+    def _make(uid: str = "") -> TestClient:
+        monkeypatch.setattr(partners_router_mod, "_current_owner_id", lambda: uid)
+        return client
+
+    return _make
 
 
 def _create(client: TestClient, **overrides):
@@ -80,9 +108,14 @@ class TestCreate:
         assert body["soul_origin"] == {"type": "custom", "id": ""}
         assert body["provisioning"]["errors"] == []
 
-    def test_duplicate_id_conflicts(self, client):
-        assert _create(client).status_code == 200
-        assert _create(client).status_code == 409
+    def test_duplicate_id_auto_suffix(self, client):
+        # 同名 partner 在同一 owner scope 内自动加后缀（ada → ada-2）
+        first = _create(client)
+        assert first.status_code == 200
+        assert first.json()["partner_id"] == "ada"
+        second = _create(client)
+        assert second.status_code == 200
+        assert second.json()["partner_id"] == "ada-2"
 
     def test_top_level_delivery_flags_rejected(self, client):
         res = _create(client, channels={"send_progress": False})
@@ -368,3 +401,59 @@ class TestChatAttachments:
         assert path.read_bytes() == b"hello"
         assert path.name.endswith("_notes.txt")
         assert path.parent == isolated_root / "partners" / "ada" / "media" / "web"
+
+
+class TestOwnerIsolation:
+    """多用户隔离：API 层的 owner_id 透传与权限校验。"""
+
+    def test_create_partner_as_admin_has_empty_owner_id(self, client, isolated_root):
+        """admin 创建 partner，config 中 owner_id == ''。"""
+        assert _create(client).status_code == 200
+        cfg_path = isolated_root / "partners" / "ada" / "config.yaml"
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert data["owner_id"] == ""
+
+    def test_create_partner_as_user_has_user_owner_id(self, user_client, isolated_root):
+        """普通用户创建 partner，config 中 owner_id == uid。"""
+        client = user_client("u1")
+        assert _create(client).status_code == 200
+        cfg_path = isolated_root / "users" / "u1" / "partners" / "ada" / "config.yaml"
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert data["owner_id"] == "u1"
+
+    def test_duplicate_id_for_different_users_allowed(self, user_client):
+        """不同用户可以创建同名 partner（各自 scope 内不冲突，均 200）。"""
+        u1_client = user_client("u1")
+        assert _create(u1_client).status_code == 200
+        u2_client = user_client("u2")
+        assert _create(u2_client).status_code == 200
+
+    def test_admin_cannot_operate_user_partner(self, user_client):
+        """admin 不能操作普通用户的 partner（403）。"""
+        u1_client = user_client("u1")
+        assert _create(u1_client).status_code == 200
+        # 切回 admin 模式访问 u1 的 partner
+        admin_client = user_client("")
+        res = admin_client.get("/api/v1/partners/ada")
+        assert res.status_code == 403
+
+    def test_user_cannot_operate_other_user_partner(self, user_client):
+        """普通用户不能操作其他用户的 partner（403）。"""
+        u1_client = user_client("u1")
+        assert _create(u1_client).status_code == 200
+        u2_client = user_client("u2")
+        res = u2_client.get("/api/v1/partners/ada")
+        assert res.status_code == 403
+
+    def test_list_partners_filtered_by_user(self, user_client):
+        """list_partners 按用户过滤，只返回当前用户拥有的 partner。"""
+        u1_client = user_client("u1")
+        _create(u1_client)  # u1 创建 ada
+        u2_client = user_client("u2")
+        _create(u2_client, name="Bob", partner_id="bob")  # u2 创建 bob
+
+        # 切回 u1，list 只含 ada
+        u1_client = user_client("u1")
+        body = u1_client.get("/api/v1/partners").json()
+        pids = {p["partner_id"] for p in body}
+        assert pids == {"ada"}

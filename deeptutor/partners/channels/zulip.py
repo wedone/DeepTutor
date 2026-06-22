@@ -39,6 +39,16 @@ _CODE_BLOCK_RE = re.compile(
     r"(```(?!math)[\s\S]*?```|`[^`\n]+`)",
 )
 
+
+def _display_math_repl(m: re.Match) -> str:
+    body = m.group(1).strip()
+    return f"```math\n{body}\n```\n"
+
+
+def _inline_math_repl(m: re.Match) -> str:
+    return f"$${m.group(1)}$$"
+
+
 ZULIP_MAX_MESSAGE_LEN = 10000
 ZULIP_UPLOAD_PREFIX = "/user_uploads/"
 MENTION_FLAGS = frozenset(
@@ -670,18 +680,10 @@ class ZulipChannel(BaseChannel):
             return f"\x00CODE{len(placeholders) - 1}\x00"
 
         text = _CODE_BLOCK_RE.sub(_save_code, text)
-
-        def _display_math(m: re.Match) -> str:
-            body = m.group(1).strip()
-            return f"```math\n{body}\n```"
-
-        text = _DISPLAY_MATH_RE.sub(_display_math, text)
-
-        def _inline_math(m: re.Match) -> str:
-            body = m.group(1)
-            return f"$${body}$$"
-
-        text = _INLINE_MATH_RE.sub(_inline_math, text)
+        text = _DISPLAY_MATH_RE.sub(_display_math_repl, text)
+        # 后处理：连续 math 块之间只能有一个换行，避免出现空行
+        text = re.sub(r"\n\n", "\n", text, flags=re.MULTILINE)
+        text = _INLINE_MATH_RE.sub(_inline_math_repl, text)
 
         for i, code in enumerate(placeholders):
             text = text.replace(f"\x00CODE{i}\x00", code)

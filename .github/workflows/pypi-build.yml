@@ -1,0 +1,216 @@
+name: Build PyPI Package
+run-name: ${{ inputs.workflow_name || 'Build PyPI Package' }}
+
+# 手动构建 PyPI 包，用于本地安装测试，不推送到 PyPI。
+#
+# 用途：
+#   - 在 main / dev / dev/personal 等分支上构建 wheel
+#   - 下载构建产物，本地 pip install 测试
+#   - 减少部署中间出错概率：先在 CI 编译验证，再下载到 test 主机
+#
+# 使用方法：
+#   1. GitHub → Actions → "Build PyPI Package" → Run workflow
+#   2. 输入分支名（如 main、dev1、dev/personal）
+#   3. （可选）输入 commit SHA，留空使用分支最新提交
+#   4. （可选）输入 artifact 名称标识本次构建
+#   5. （可选）选择是否跳过冒烟测试
+#   6. （可选）选择是否禁用构建缓存
+#   7. 等待构建完成，在 Summary 页面下载 artifact
+#   8. 上传到 test 主机：pip install deeptutor-*.whl --force-reinstall --no-deps
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow_name:
+        description: '本次构建任务名称（用于标识，例如：心跳配置构建、dev 分支构建）'
+        required: false
+        default: 'Build PyPI Package'
+        type: string
+      branch:
+        description: '要构建的分支（例如：main, dev, dev/personal）'
+        required: true
+        default: 'main'
+        type: string
+      commit:
+        description: '指定 commit SHA（留空则使用分支最新提交）'
+        required: false
+        default: ''
+        type: string
+      artifact_name:
+        description: '自定义 artifact 名称（用于区分不同构建，例如：test-fix、dev-build，留空则自动生成）'
+        required: false
+        default: ''
+        type: string
+      skip_smoke_test:
+        description: '跳过冒烟测试（加快构建速度，建议仅在确认代码无问题时使用）'
+        required: false
+        default: false
+        type: boolean
+      no_cache:
+        description: '禁用构建缓存（建议首次构建或排查问题时开启）'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+
+jobs:
+  build-wheel:
+    name: Build Wheel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Determine branch
+        id: branch
+        run: |
+          echo "branch=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+
+      - name: Record build start time
+        id: build_time
+        run: |
+          echo "start=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S CST')" >> $GITHUB_OUTPUT
+
+      - name: Determine ref
+        id: ref
+        run: |
+          if [ -n "${{ inputs.commit }}" ]; then
+            echo "ref=${{ inputs.commit }}" >> $GITHUB_OUTPUT
+            echo "Using commit: ${{ inputs.commit }}"
+          else
+            echo "ref=${{ inputs.branch }}" >> $GITHUB_OUTPUT
+            echo "Using branch: ${{ inputs.branch }}"
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit != '' && inputs.commit || steps.branch.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Determine artifact name
+        id: artifact_name
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          if [ -n "${{ inputs.artifact_name }}" ]; then
+            echo "name=${{ inputs.artifact_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=${{ inputs.branch }}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Show current commit
+        run: |
+          echo "Branch: ${{ inputs.branch }}"
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "Short:  $(git rev-parse --short HEAD)"
+          echo "Author: $(git log -1 --pretty=format:'%an <%ae>')"
+          echo "Date:   $(git log -1 --pretty=format:'%ad')"
+          echo "Subject: $(git log -1 --pretty=format:'%s')"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade build twine
+
+      - name: Get version
+        id: version
+        run: |
+          version=$(grep -oP '(?<=__version__ = ")[^"]+' deeptutor/__version__.py)
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "Detected version: $version"
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --legacy-peer-deps
+
+      - name: Build packaged Web assets
+        run: python scripts/prepare_web_package.py
+        env:
+          NEXT_PUBLIC_API_BASE: __NEXT_PUBLIC_API_BASE_PLACEHOLDER__
+          NEXT_PUBLIC_AUTH_ENABLED: __NEXT_PUBLIC_AUTH_ENABLED_PLACEHOLDER__
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Run from /tmp so any repository-local build/ directory cannot shadow
+          # PyPA's `build` module during repeated package builds.
+          (cd /tmp && python -m build --wheel --outdir "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE")
+
+      - name: List built artifacts
+        run: |
+          echo "## 📦 构建产物" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          ls -lh dist/
+
+      - name: Verify package metadata
+        run: |
+          python -m twine check dist/*
+
+      - name: Smoke test - import main module
+        if: inputs.skip_smoke_test != true
+        run: |
+          echo "## 🧪 冒烟测试" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          # 安装到临时 venv
+          python -m venv /tmp/venv-smoke
+          /tmp/venv-smoke/bin/pip install --quiet dist/*.whl
+          /tmp/venv-smoke/bin/python -c 'from deeptutor.__version__ import __version__; print("deeptutor v" + __version__ + " 导入成功")'
+          echo "✅ Wheel 包可以正常安装和导入" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deeptutor-${{ steps.version.outputs.version }}-${{ steps.artifact_name.outputs.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Output build summary
+        run: |
+          echo "## 📦 PyPI Wheel 构建摘要" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**任务名称**: ${{ inputs.workflow_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**构建状态**: ${{ job.status == 'success' && '✅ 成功' || '❌ 失败' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**构建开始**: ${{ steps.build_time.outputs.start }}" >> $GITHUB_STEP_SUMMARY
+          echo "**构建完成**: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') CST" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 参数" >> $GITHUB_STEP_SUMMARY
+          echo "  - 分支：\`${{ inputs.branch }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - Commit：\`$(git rev-parse --short HEAD)\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - 版本：\`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - Artifact 名称：\`${{ steps.artifact_name.outputs.name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - 跳过冒烟测试：\`${{ inputs.skip_smoke_test && '是' || '否' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - 禁用缓存：\`${{ inputs.no_cache && '是' || '否' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📥 使用方法" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# 1. 在 GitHub Actions 页面下载 artifact" >> $GITHUB_STEP_SUMMARY
+          echo "# 2. 上传到 test 主机" >> $GITHUB_STEP_SUMMARY
+          echo "scp deeptutor-${{ steps.version.outputs.version }}-py3-none-any.whl test-host:/tmp/" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# 3. 在 test 主机安装" >> $GITHUB_STEP_SUMMARY
+          echo "ssh test-host << EOF" >> $GITHUB_STEP_SUMMARY
+          echo "  sudo systemctl stop deeptutor" >> $GITHUB_STEP_SUMMARY
+          echo "  /home/wedo/DeepTutor/.venv/bin/pip install /tmp/deeptutor-${{ steps.version.outputs.version }}-py3-none-any.whl --force-reinstall" >> $GITHUB_STEP_SUMMARY
+          echo "  sudo systemctl start deeptutor" >> $GITHUB_STEP_SUMMARY
+          echo "EOF" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 链接" >> $GITHUB_STEP_SUMMARY
+          echo "- [查看构建日志](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY

@@ -2,6 +2,7 @@ package dev.raaa.deeptutor
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.webkit.WebView
@@ -23,12 +24,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progress: ProgressBar
     private lateinit var store: ServerStore
     private lateinit var refresh: SwipeRefreshLayout
+    private lateinit var uploadPicker: UploadPicker
     private var atPageTop = true
     private var lastBackAt = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // registerForActivityResult 必须早于 Activity STARTED，故在此提前构造
+        uploadPicker = UploadPicker(this)
 
         store = ServerStore(this)
         val serverUrl = store.serverUrl
@@ -61,10 +66,23 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "$userAgentString DeepTutorAndroid/${BuildConfig.VERSION_NAME}"
         }
 
+        webView.webChromeClient = ShellChromeClient(uploadPicker) { value ->
+            progress.progress = value
+            progress.visibility = if (value in 1..99) View.VISIBLE else View.GONE
+        }
+
+        val downloads = DownloadBridge(this) { message ->
+            runOnUiThread { android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show() }
+        }
+        webView.setDownloadListener(downloads)
         webView.addJavascriptInterface(
             ShellBridge(
                 themeCallback = { dark -> runOnUiThread { applySystemBars(dark) } },
                 scrollCallback = { top -> atPageTop = top },
+                blobBegin = downloads::begin,
+                blobChunk = downloads::append,
+                blobFinish = downloads::finish,
+                blobFailed = downloads::failed,
             ),
             "DeeptutorBridge",
         )
@@ -98,6 +116,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.loadUrl(serverUrl)
+
+        // Android 8–9 写公共 Downloads 需要存储权限
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 9001)
+        }
     }
 
     private var fallbackScript: String? = null

@@ -1230,18 +1230,24 @@ class UploadPicker(private val activity: AppCompatActivity) {
     }
 
     private fun openGallery(multiple: Boolean) {
-        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val picker = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Intent(MediaStore.ACTION_PICK_IMAGES).apply {
                 if (multiple) putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, 10)
             }
         } else {
+            null
+        }
+        val intent = if (picker != null && picker.resolveActivity(activity.packageManager) != null) {
+            picker
+        } else {
+            // 没有系统照片选择器时退回通用图片选择
             Intent(Intent.ACTION_GET_CONTENT).apply {
                 type = "image/*"
                 addCategory(Intent.CATEGORY_OPENABLE)
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
             }
         }
-        mediaLauncher.launch(intent)
+        launch(mediaLauncher, intent)
     }
 
     private fun openCamera() {
@@ -1250,12 +1256,16 @@ class UploadPicker(private val activity: AppCompatActivity) {
         val uri = androidx.core.content.FileProvider.getUriForFile(
             activity, "${activity.packageName}.fileprovider", file
         )
-        pendingCameraUri = uri
         val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
             putExtra(MediaStore.EXTRA_OUTPUT, uri)
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
-        cameraLauncher.launch(intent)
+        if (intent.resolveActivity(activity.packageManager) == null) {
+            cancel()
+            return
+        }
+        pendingCameraUri = uri
+        launch(cameraLauncher, intent)
     }
 
     private fun openDocuments(multiple: Boolean) {
@@ -1264,7 +1274,18 @@ class UploadPicker(private val activity: AppCompatActivity) {
             type = "*/*"
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
         }
-        documentLauncher.launch(intent)
+        launch(documentLauncher, intent)
+    }
+
+    private fun launch(
+        launcher: androidx.activity.result.ActivityResultLauncher<Intent>,
+        intent: Intent,
+    ) {
+        try {
+            launcher.launch(intent)
+        } catch (_: Exception) {
+            cancel()
+        }
     }
 
     private fun showChooser() {

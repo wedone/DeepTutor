@@ -56,3 +56,62 @@
 
   attach();
 })();
+
+// blob: 下载拦截：把页面生成的 blob 分块交给原生落盘，避免 WebView 无处可存。
+(function () {
+  if (window.__deeptutorBlobHook) return;
+  window.__deeptutorBlobHook = true;
+
+  var MAX_BYTES = 32 * 1024 * 1024;
+  var CHUNK = 512 * 1024;
+  var blobs = {};
+  var seq = 0;
+  var originalCreate = URL.createObjectURL.bind(URL);
+
+  URL.createObjectURL = function (blob) {
+    var url = originalCreate(blob);
+    try { blobs[url] = blob; } catch (e) {}
+    return url;
+  };
+
+  async function saveBlob(url, name) {
+    try {
+      var blob = blobs[url] || (await fetch(url)).blob();
+      if (blob.size > MAX_BYTES) throw new Error('too large');
+      var buffer = await blob.arrayBuffer();
+      var bytes = new Uint8Array(buffer);
+      var id = 'blob-' + (++seq);
+      if (!window.DeeptutorBridge.beginBlob(id, name, blob.type || '')) return;
+      var index = 0;
+      for (var offset = 0; offset < bytes.length; offset += CHUNK) {
+        var slice = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length));
+        var binary = '';
+        for (var i = 0; i < slice.length; i++) binary += String.fromCharCode(slice[i]);
+        if (!window.DeeptutorBridge.appendBlob(id, index++, btoa(binary))) return;
+      }
+      window.DeeptutorBridge.finishBlob(id);
+    } catch (e) {
+      if (window.DeeptutorBridge) window.DeeptutorBridge.onDownloadFailed(String(e));
+    }
+  }
+
+  document.addEventListener('click', function (event) {
+    var anchor = event.target && event.target.closest ? event.target.closest('a[download]') : null;
+    if (!anchor) return;
+    var href = anchor.getAttribute('href') || '';
+    if (href.startsWith('blob:')) {
+      event.preventDefault();
+      saveBlob(href, anchor.getAttribute('download') || 'download');
+    }
+  }, true);
+
+  var originalOpen = window.open;
+  window.open = function (url) {
+    if (typeof url === 'string' && url.startsWith('blob:')) {
+      saveBlob(url, 'download');
+      return null;
+    }
+    return originalOpen.apply(window, arguments);
+  };
+})();
+

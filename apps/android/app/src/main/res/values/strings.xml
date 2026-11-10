@@ -10,4 +10,8 @@
     <string name="connect_insecure_message">该地址使用明文 HTTP，内容可能在传输中被窃听。仅建议在可信内网使用。</string>
     <string name="connect_continue">仍然继续</string>
     <string name="back_to_exit">再按一次退出</string>
+    <string name="upload_source_title">添加内容</string>
+    <string name="upload_source_camera">拍照</string>
+    <string name="upload_source_gallery">从相册选择</string>
+    <string name="upload_source_file">选择文件</string>
 </resources>

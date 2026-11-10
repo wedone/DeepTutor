@@ -1,3 +1,12 @@
 <resources>
     <string name="app_name">DeepTutor</string>
+    <string name="connect_title">连接到你的 DeepTutor</string>
+    <string name="connect_subtitle">输入你部署的 Web 端地址，例如 https://your-domain:4433</string>
+    <string name="connect_url_hint">服务器地址</string>
+    <string name="connect_action">连接</string>
+    <string name="connect_invalid">地址无效，请检查格式</string>
+    <string name="connect_unreachable">暂时无法连接，仍可继续尝试</string>
+    <string name="connect_insecure_title">不安全的连接</string>
+    <string name="connect_insecure_message">该地址使用明文 HTTP，内容可能在传输中被窃听。仅建议在可信内网使用。</string>
+    <string name="connect_continue">仍然继续</string>
 </resources>

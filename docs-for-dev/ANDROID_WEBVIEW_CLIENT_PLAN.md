@@ -455,11 +455,10 @@ object ServerUrl {
     fun normalize(raw: String): String? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return null
-        val withScheme = when {
-            trimmed.startsWith("https://", ignoreCase = true) -> trimmed
-            trimmed.startsWith("http://", ignoreCase = true) -> trimmed
-            else -> "https://$trimmed"
-        }
+        // 显式写了协议就必须是 http(s)，否则 "ftp://host" 会被当成 https 主机名
+        val explicitScheme = SCHEME_PATTERN.find(trimmed)?.groupValues?.get(1)?.lowercase()
+        if (explicitScheme != null && explicitScheme != "http" && explicitScheme != "https") return null
+        val withScheme = if (explicitScheme == null) "https://$trimmed" else trimmed
         return try {
             val uri = URI(withScheme)
             val scheme = uri.scheme?.lowercase()
@@ -475,6 +474,8 @@ object ServerUrl {
             null
         }
     }
+
+    private val SCHEME_PATTERN = Regex("^([a-zA-Z][a-zA-Z0-9+.\\-]*)://")
 
     /** 明文 HTTP 视为不安全连接，需要在界面上提示。 */
     fun isInsecure(url: String): Boolean = url.startsWith("http://", ignoreCase = true)
@@ -889,6 +890,7 @@ class MainActivity : AppCompatActivity() {
         store = ServerStore(this)
         val serverUrl = store.serverUrl
         if (serverUrl.isNullOrBlank()) {
+            startActivity(android.content.Intent(this, ConnectActivity::class.java))
             finish()
             return
         }

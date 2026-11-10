@@ -241,12 +241,12 @@ apps/android/
   gradle/wrapper/…
   app/build.gradle.kts
   app/src/main/AndroidManifest.xml
-  app/src/main/java/fun/raaa/deeptutor/…
+  app/src/main/java/dev/raaa/deeptutor/…
   app/src/main/assets/shell.js
   app/src/main/res/…
 ```
 
-- 包名 `fun.raaa.deeptutor`，显示名 `DeepTutor`
+- 包名 `dev.raaa.deeptutor`，显示名 `DeepTutor`
 - `minSdk 26`，`targetSdk 35`，`compileSdk 35`
 - `versionName` = `deeptutor/__version__.py` 的值（当前 `1.7.2`）
 - `versionCode` = `major * 10000 + minor * 100 + patch`（`1.7.2` → `10702`）

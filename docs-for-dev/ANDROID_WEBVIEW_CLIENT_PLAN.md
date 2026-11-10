@@ -29,7 +29,7 @@ apps/android/
         ├── main/
         │   ├── AndroidManifest.xml
         │   ├── assets/shell.js                注入脚本（主题/滚动/blob）
-        │   ├── java/fun/raaa/deeptutor/
+        │   ├── java/dev/raaa/deeptutor/
         │   │   ├── MainActivity.kt            壳主界面
         │   │   ├── ConnectActivity.kt         首次启动地址输入
         │   │   ├── ShellWebViewClient.kt      加载/外链/错误
@@ -43,7 +43,7 @@ apps/android/
         │   │   ├── LoadErrorView.kt           错误页
         │   │   └── FloatingSettingsButton.kt  可拖动悬浮按钮
         │   └── res/                           布局、主题、图标、FileProvider
-        └── test/java/fun/raaa/deeptutor/
+        └── test/java/dev/raaa/deeptutor/
             ├── ServerUrlTest.kt
             ├── FileNameTest.kt
             └── BlobAssemblerTest.kt
@@ -112,7 +112,7 @@ Expected: `Gradle 8.9`、`Android Debug Bridge version 1.0.41`。
 - Create: `apps/android/app/build.gradle.kts`
 - Create: `apps/android/app/proguard-rules.pro`
 - Create: `apps/android/app/src/main/AndroidManifest.xml`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/MainActivity.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 - Create: `apps/android/app/src/main/res/values/strings.xml`
 - Create: `apps/android/app/src/main/res/values/themes.xml`
 
@@ -205,11 +205,11 @@ val deeptutorVersionCode: Int = deeptutorVersion
     .let { (major, minor, patch) -> major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt() }
 
 android {
-    namespace = "fun.raaa.deeptutor"
+    namespace = "dev.raaa.deeptutor"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "fun.raaa.deeptutor"
+        applicationId = "dev.raaa.deeptutor"
         minSdk = 26
         targetSdk = 35
         versionCode = deeptutorVersionCode
@@ -276,7 +276,7 @@ dependencies {
 
 ```proguard
 # JS 桥接方法不能被混淆或移除
--keepclassmembers class fun.raaa.deeptutor.ShellBridge {
+-keepclassmembers class dev.raaa.deeptutor.ShellBridge {
     @android.webkit.JavascriptInterface <methods>;
 }
 ```
@@ -298,7 +298,7 @@ dependencies {
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.DeepTutor"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
@@ -309,10 +309,23 @@ dependencies {
 </manifest>
 ```
 
+> `usesCleartextTraffic="true"` 允许用户显式填写内网 HTTP 地址；HTTPS 页面内的混合内容仍被 WebView 的 `MIXED_CONTENT_NEVER_ALLOW` 阻止，连接页会对 HTTP 给出不安全提示。
+
+同时创建 `apps/android/.gitignore`，避免构建产物与本地 SDK 路径入库：
+
+```gitignore
+.gradle/
+build/
+.kotlin/
+local.properties
+*.iml
+captures/
+```
+
 - [ ] **Step 7: 写 `MainActivity.kt` 占位、`strings.xml`、`themes.xml`，并创建 `DeepTutorApp.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.app.Application
 
@@ -320,7 +333,7 @@ class DeepTutorApp : Application()
 ```
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.os.Bundle
 import android.widget.TextView
@@ -373,13 +386,13 @@ git commit -m "feat(android): 新增 Android 壳工程骨架与版本注入"
 ## Task 3：服务器地址模型与校验（TDD）
 
 **Files:**
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/ServerUrl.kt`
-- Create: `apps/android/app/src/test/java/fun/raaa/deeptutor/ServerUrlTest.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/ServerUrl.kt`
+- Create: `apps/android/app/src/test/java/dev/raaa/deeptutor/ServerUrlTest.kt`
 
 - [ ] **Step 1: 写失败测试**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -423,7 +436,7 @@ class ServerUrlTest {
 - [ ] **Step 2: 运行测试确认失败**
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest --tests 'fun.raaa.deeptutor.ServerUrlTest'
+.\gradlew.bat :app:testDebugUnitTest --tests 'dev.raaa.deeptutor.ServerUrlTest'
 ```
 
 Expected: 编译失败，提示 `Unresolved reference: ServerUrl`。
@@ -431,7 +444,7 @@ Expected: 编译失败，提示 `Unresolved reference: ServerUrl`。
 - [ ] **Step 3: 实现 `ServerUrl.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import java.net.URI
 
@@ -482,7 +495,7 @@ object ServerUrl {
 - [ ] **Step 4: 运行测试确认通过**
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest --tests 'fun.raaa.deeptutor.ServerUrlTest'
+.\gradlew.bat :app:testDebugUnitTest --tests 'dev.raaa.deeptutor.ServerUrlTest'
 ```
 
 Expected: `BUILD SUCCESSFUL`，6 个测试通过。
@@ -499,15 +512,15 @@ git commit -m "feat(android): 新增服务器地址校验与同源判断"
 ## Task 4：地址存储与连接页
 
 **Files:**
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/ServerStore.kt`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/ConnectActivity.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/ServerStore.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/ConnectActivity.kt`
 - Create: `apps/android/app/src/main/res/layout/activity_connect.xml`
 - Modify: `apps/android/app/src/main/AndroidManifest.xml`
 
 - [ ] **Step 1: 写 `ServerStore.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.content.Context
 
@@ -624,7 +637,7 @@ class ServerStore(context: Context) {
 - [ ] **Step 3: 写 `ConnectActivity.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.content.Intent
 import android.os.Bundle
@@ -667,19 +680,34 @@ class ConnectActivity : AppCompatActivity() {
             }
             layout.error = null
             error.visibility = View.GONE
-            button.isEnabled = false
-            lifecycleScope.launch {
-                val reachable = probe(normalized)
-                button.isEnabled = true
-                if (!reachable) {
-                    error.text = getString(R.string.connect_unreachable)
-                    error.visibility = View.VISIBLE
-                }
-                // 预检失败也允许继续，避免误判阻断内网/自签环境
-                store.serverUrl = normalized
-                startActivity(Intent(this@ConnectActivity, MainActivity::class.java))
-                finish()
+            if (ServerUrl.isInsecure(normalized)) {
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this@ConnectActivity)
+                    .setTitle(R.string.connect_insecure_title)
+                    .setMessage(R.string.connect_insecure_message)
+                    .setPositiveButton(R.string.connect_continue) { _, _ -> saveAndOpen(normalized) }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+                return@setOnClickListener
             }
+            saveAndOpen(normalized)
+        }
+    }
+
+    private fun saveAndOpen(url: String) {
+        val button = findViewById<MaterialButton>(R.id.connectButton)
+        val error = findViewById<View>(R.id.urlError)
+        button.isEnabled = false
+        lifecycleScope.launch {
+            val reachable = probe(url)
+            button.isEnabled = true
+            if (!reachable) {
+                error.text = getString(R.string.connect_unreachable)
+                error.visibility = View.VISIBLE
+            }
+            // 预检失败也允许继续，避免误判阻断内网/自签环境
+            store.serverUrl = url
+            startActivity(Intent(this@ConnectActivity, MainActivity::class.java))
+            finish()
         }
     }
 
@@ -709,6 +737,9 @@ class ConnectActivity : AppCompatActivity() {
 <string name="connect_action">连接</string>
 <string name="connect_invalid">地址无效，请检查格式</string>
 <string name="connect_unreachable">暂时无法连接，仍可继续尝试</string>
+<string name="connect_insecure_title">不安全的连接</string>
+<string name="connect_insecure_message">该地址使用明文 HTTP，内容可能在传输中被窃听。仅建议在可信内网使用。</string>
+<string name="connect_continue">仍然继续</string>
 ```
 
 `AndroidManifest.xml` 在 `MainActivity` 前加入：
@@ -741,9 +772,9 @@ git commit -m "feat(android): 新增服务器地址存储与首次连接页"
 
 **Files:**
 - Create: `apps/android/app/src/main/res/layout/activity_main.xml`
-- Modify: `apps/android/app/src/main/java/fun/raaa/deeptutor/MainActivity.kt`
+- Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 - Create: `apps/android/app/src/main/assets/shell.js`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/ShellBridge.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/ShellBridge.kt`
 
 - [ ] **Step 1: 写 `activity_main.xml`**
 
@@ -809,7 +840,7 @@ git commit -m "feat(android): 新增服务器地址存储与首次连接页"
 - [ ] **Step 3: 写 `ShellBridge.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.webkit.JavascriptInterface
 
@@ -829,7 +860,7 @@ class ShellBridge(
 - [ ] **Step 4: 在 `MainActivity.kt` 建立 WebView**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.annotation.SuppressLint
 import android.graphics.Color
@@ -955,7 +986,7 @@ git commit -m "feat(android): 接入 WebView 主界面、沉浸式系统栏与�
 
 **Files:**
 - Modify: `apps/android/app/src/main/res/layout/activity_main.xml`（用 `SwipeRefreshLayout` 包裹 WebView）
-- Modify: `apps/android/app/src/main/java/fun/raaa/deeptutor/MainActivity.kt`
+- Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 
 - [ ] **Step 1: 用 `SwipeRefreshLayout` 包裹 WebView**
 
@@ -1029,11 +1060,11 @@ git commit -m "feat(android): 支持返回键层级与顶部下拉刷新"
 ## Task 7：文件上传（相册 / 相机 / 文件）
 
 **Files:**
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/UploadPicker.kt`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/ShellChromeClient.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/UploadPicker.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/ShellChromeClient.kt`
 - Create: `apps/android/app/src/main/res/xml/file_paths.xml`
 - Modify: `apps/android/app/src/main/AndroidManifest.xml`
-- Modify: `apps/android/app/src/main/java/fun/raaa/deeptutor/MainActivity.kt`
+- Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 
 - [ ] **Step 1: 写 `file_paths.xml` 与 FileProvider**
 
@@ -1061,7 +1092,7 @@ git commit -m "feat(android): 支持返回键层级与顶部下拉刷新"
 - [ ] **Step 2: 写 `UploadPicker.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.app.Activity
 import android.content.Intent
@@ -1263,7 +1294,7 @@ class UploadPicker(private val activity: AppCompatActivity) {
 - [ ] **Step 4: 写 `ShellChromeClient.kt` 并在 `MainActivity` 注册**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.net.Uri
 import android.webkit.ValueCallback
@@ -1351,18 +1382,18 @@ git commit -m "feat(android): 上传按 accept 分流并支持相册/相机/文�
 ## Task 8：下载（http(s) 与 blob）
 
 **Files:**
-- Create: `apps/android/app/src/test/java/fun/raaa/deeptutor/FileNameTest.kt`
-- Create: `apps/android/app/src/test/java/fun/raaa/deeptutor/BlobAssemblerTest.kt`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/FileName.kt`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/BlobAssembler.kt`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/DownloadBridge.kt`
+- Create: `apps/android/app/src/test/java/dev/raaa/deeptutor/FileNameTest.kt`
+- Create: `apps/android/app/src/test/java/dev/raaa/deeptutor/BlobAssemblerTest.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/FileName.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/BlobAssembler.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/DownloadBridge.kt`
 - Modify: `apps/android/app/src/main/assets/shell.js`
-- Modify: `apps/android/app/src/main/java/fun/raaa/deeptutor/ShellBridge.kt`
+- Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/ShellBridge.kt`
 
 - [ ] **Step 1: 写失败测试**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -1386,7 +1417,7 @@ class FileNameTest {
 ```
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -1420,7 +1451,7 @@ class BlobAssemblerTest {
 - [ ] **Step 2: 运行确认失败**
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest --tests 'fun.raaa.deeptutor.FileNameTest' --tests 'fun.raaa.deeptutor.BlobAssemblerTest'
+.\gradlew.bat :app:testDebugUnitTest --tests 'dev.raaa.deeptutor.FileNameTest' --tests 'dev.raaa.deeptutor.BlobAssemblerTest'
 ```
 
 Expected: 编译失败，提示 `Unresolved reference: FileName` / `BlobAssembler`。
@@ -1428,7 +1459,7 @@ Expected: 编译失败，提示 `Unresolved reference: FileName` / `BlobAssemble
 - [ ] **Step 3: 实现 `FileName.kt` 与 `BlobAssembler.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 object FileName {
     /** 去除路径分隔符与控制字符，避免写入 Downloads 时穿越目录。 */
@@ -1444,7 +1475,7 @@ object FileName {
 ```
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import java.io.ByteArrayOutputStream
 
@@ -1471,7 +1502,7 @@ class BlobAssembler(private val maxBytes: Int) {
 - [ ] **Step 4: 运行测试确认通过**
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest --tests 'fun.raaa.deeptutor.FileNameTest' --tests 'fun.raaa.deeptutor.BlobAssemblerTest'
+.\gradlew.bat :app:testDebugUnitTest --tests 'dev.raaa.deeptutor.FileNameTest' --tests 'dev.raaa.deeptutor.BlobAssemblerTest'
 ```
 
 Expected: `BUILD SUCCESSFUL`。
@@ -1574,7 +1605,7 @@ class ShellBridge(
 - [ ] **Step 7: 实现 `DownloadBridge.kt` 并在 `MainActivity` 接线**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.app.DownloadManager
 import android.content.ContentValues
@@ -1708,13 +1739,13 @@ git commit -m "feat(android): 支持 http 与 blob 下载落盘"
 ## Task 9：外部链接与 window.open
 
 **Files:**
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/ShellWebViewClient.kt`
-- Modify: `apps/android/app/src/main/java/fun/raaa/deeptutor/MainActivity.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/ShellWebViewClient.kt`
+- Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 
 - [ ] **Step 1: 写 `ShellWebViewClient.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -1820,11 +1851,11 @@ git commit -m "feat(android): 外链交给系统浏览器并拦截 window.open"
 
 **Files:**
 - Create: `apps/android/app/src/main/res/layout/view_load_error.xml`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/LoadErrorView.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/LoadErrorView.kt`
 - Create: `apps/android/app/src/main/res/layout/view_floating_settings.xml`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/FloatingSettingsButton.kt`
-- Create: `apps/android/app/src/main/java/fun/raaa/deeptutor/SettingsSheet.kt`
-- Modify: `apps/android/app/src/main/java/fun/raaa/deeptutor/MainActivity.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/FloatingSettingsButton.kt`
+- Create: `apps/android/app/src/main/java/dev/raaa/deeptutor/SettingsSheet.kt`
+- Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 
 - [ ] **Step 1: 写 `view_load_error.xml` 与 `LoadErrorView.kt`**
 
@@ -1869,7 +1900,7 @@ git commit -m "feat(android): 外链交给系统浏览器并拦截 window.open"
 ```
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.content.Context
 import android.util.AttributeSet
@@ -1927,7 +1958,7 @@ class LoadErrorView @JvmOverloads constructor(
 ```
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -1989,7 +2020,7 @@ class FloatingSettingsButton(
 - [ ] **Step 3: 写 `SettingsSheet.kt`**
 
 ```kotlin
-package fun.raaa.deeptutor
+package dev.raaa.deeptutor
 
 import android.content.Context
 import android.webkit.CookieManager
@@ -2198,7 +2229,7 @@ git commit -m "feat(android): 新增错误页、悬浮设置按钮与原生设�
 - Create: `apps/android/app/src/main/res/drawable/ic_launcher_foreground.xml`（或复用 `web/public/brand/color-logo.png` 生成的 PNG）
 - Create: `apps/android/app/src/main/res/values/ic_launcher_background.xml`
 - Create: `apps/android/app/src/main/res/drawable/splash_logo.xml`
-- Modify: `apps/android/app/src/main/java/fun/raaa/deeptutor/MainActivity.kt`
+- Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 - Modify: `apps/android/app/src/main/AndroidManifest.xml`
 
 - [ ] **Step 1: 准备图标资源**

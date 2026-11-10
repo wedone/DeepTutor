@@ -304,7 +304,12 @@ dependencies {
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|uiMode"
             android:exported="true"
-            android:windowSoftInputMode="adjustResize" />
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
 ```

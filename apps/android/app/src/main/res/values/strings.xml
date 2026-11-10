@@ -14,4 +14,11 @@
     <string name="upload_source_camera">拍照</string>
     <string name="upload_source_gallery">从相册选择</string>
     <string name="upload_source_file">选择文件</string>
+    <string name="settings_title">设置</string>
+    <string name="settings_save_server">保存地址并重新加载</string>
+    <string name="settings_reload">重新加载页面</string>
+    <string name="settings_clear_data">清除站点数据</string>
+    <string name="settings_about">App %1$s · 当前地址 %2$s</string>
+    <string name="error_retry">重试</string>
+    <string name="error_settings">服务器设置</string>
 </resources>

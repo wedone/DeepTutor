@@ -10,6 +10,7 @@ import android.widget.FrameLayout
 import android.widget.ProgressBar
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -25,12 +26,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var store: ServerStore
     private lateinit var refresh: SwipeRefreshLayout
     private lateinit var uploadPicker: UploadPicker
+    private lateinit var errorView: LoadErrorView
+    private lateinit var fab: FloatingSettingsButton
     private var atPageTop = true
     private var lastBackAt = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 首帧渲染完成或最多 2 秒后关闭启动页
+        val startedAt = android.os.SystemClock.uptimeMillis()
+        val splash = installSplashScreen()
+        splash.setKeepOnScreenCondition {
+            val elapsed = android.os.SystemClock.uptimeMillis() - startedAt
+            (!::webView.isInitialized || webView.contentHeight == 0) && elapsed < 2_000
+        }
 
         // registerForActivityResult 必须早于 Activity STARTED，故在此提前构造
         uploadPicker = UploadPicker(this)
@@ -66,9 +77,38 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "$userAgentString DeepTutorAndroid/${BuildConfig.VERSION_NAME}"
         }
 
-        webView.webChromeClient = ShellChromeClient(uploadPicker) { value ->
+        installDocumentStartScript()
+        webView.webViewClient = ShellWebViewClient(
+            context = this,
+            serverUrl = { store.serverUrl.orEmpty() },
+            onMainFrameError = { message -> runOnUiThread { showLoadError(message) } },
+            fallbackScript = currentFallbackScript(),
+        )
+        webView.settings.setSupportMultipleWindows(true)
+        webView.webChromeClient = object : ShellChromeClient(uploadPicker, { value ->
             progress.progress = value
             progress.visibility = if (value in 1..99) View.VISIBLE else View.GONE
+        }) {
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?,
+            ): Boolean {
+                // target=_blank 不经过 shouldOverrideUrlLoading，这里取命中链接交给系统浏览器
+                val href = view?.hitTestResult?.extra
+                if (!href.isNullOrBlank() && !href.startsWith("blob:")) {
+                    try {
+                        startActivity(
+                            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href))
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    } catch (_: Exception) {
+                        // 没有应用可以处理该链接时忽略
+                    }
+                }
+                return false
+            }
         }
 
         val downloads = DownloadBridge(this) { message ->
@@ -87,7 +127,6 @@ class MainActivity : AppCompatActivity() {
             "DeeptutorBridge",
         )
 
-        installDocumentStartScript()
         applySystemBars(isSystemDark())
 
         refresh = findViewById(R.id.refresh)
@@ -115,6 +154,21 @@ class MainActivity : AppCompatActivity() {
             ).show()
         }
 
+        errorView = LoadErrorView(this).apply { visibility = View.GONE }
+        root.addView(
+            errorView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        fab = FloatingSettingsButton(this, store) {
+            SettingsSheet(this, store, webView, ::onServerChanged).show()
+        }
+        val fabSize = (40 * resources.displayMetrics.density).toInt()
+        root.addView(fab, FrameLayout.LayoutParams(fabSize, fabSize))
+        restoreFabPosition()
+
         webView.loadUrl(serverUrl)
 
         // Android 8–9 写公共 Downloads 需要存储权限
@@ -140,6 +194,39 @@ class MainActivity : AppCompatActivity() {
 
     /** 供 Task 9 创建 ShellWebViewClient 时使用。 */
     fun currentFallbackScript(): String? = fallbackScript
+
+    private fun showLoadError(message: String) {
+        errorView.visibility = View.VISIBLE
+        errorView.bind(
+            message = message,
+            onRetry = {
+                errorView.visibility = View.GONE
+                webView.reload()
+            },
+            onSettings = { SettingsSheet(this, store, webView, ::onServerChanged).show() },
+        )
+    }
+
+    private fun onServerChanged(url: String) {
+        if (url.isBlank()) {
+            startActivity(android.content.Intent(this, ConnectActivity::class.java))
+            finish()
+            return
+        }
+        errorView.visibility = View.GONE
+        webView.loadUrl(url)
+    }
+
+    private fun restoreFabPosition() {
+        fab.post {
+            val root = findViewById<FrameLayout>(R.id.root)
+            val margin = (16 * resources.displayMetrics.density).toInt()
+            val x = if (store.fabX == Int.MIN_VALUE) root.width - fab.width - margin else store.fabX
+            val y = if (store.fabY == Int.MIN_VALUE) root.height - fab.height - margin * 4 else store.fabY
+            fab.x = x.toFloat()
+            fab.y = y.toFloat()
+        }
+    }
 
     private fun applySystemBars(dark: Boolean) {
         // API 35 下 statusBarColor 已失效，由根布局背景承担系统栏底色

@@ -9,6 +9,7 @@
     <application
         android:name=".DeepTutorApp"
         android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.DeepTutor"
@@ -23,6 +24,7 @@
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|uiMode"
             android:exported="true"
+            android:theme="@style/Theme.DeepTutor.Splash"
             android:windowSoftInputMode="adjustResize" />
 
         <provider

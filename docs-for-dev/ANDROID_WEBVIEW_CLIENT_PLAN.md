@@ -1888,7 +1888,18 @@ webView.webChromeClient = object : ShellChromeClient(uploadPicker, { value ->
         isUserGesture: Boolean,
         resultMsg: android.os.Message?,
     ): Boolean {
-        // 外链交给系统浏览器；blob 预览由注入脚本保存
+        // target=_blank 不经过 shouldOverrideUrlLoading，这里取命中链接交给系统浏览器
+        val href = view?.hitTestResult?.extra
+        if (!href.isNullOrBlank() && !href.startsWith("blob:")) {
+            try {
+                startActivity(
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href))
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: Exception) {
+                // 没有应用可以处理该链接时忽略
+            }
+        }
         return false
     }
 }
@@ -2039,24 +2050,43 @@ class FloatingSettingsButton(
     private val onClick: () -> Unit,
 ) : FrameLayout(context) {
 
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var downRawX = 0f
+    private var downRawY = 0f
+    private var dragged = false
+
     init {
         inflate(context, R.layout.view_floating_settings, this)
         alpha = 0.85f
-        setOnClickListener { onClick() }
     }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> return true
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downRawX = event.rawX
+                downRawY = event.rawY
+                dragged = false
+                return true
+            }
             MotionEvent.ACTION_MOVE -> {
-                x = event.rawX - width / 2f
-                y = event.rawY - height / 2f
+                if (!dragged &&
+                    (abs(event.rawX - downRawX) > touchSlop || abs(event.rawY - downRawY) > touchSlop)
+                ) {
+                    dragged = true
+                }
+                if (dragged) {
+                    x = event.rawX - width / 2f
+                    y = event.rawY - height / 2f
+                }
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                snapToEdge()
-                performClick()
+                if (dragged) snapToEdge() else performClick()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (dragged) snapToEdge()
                 return true
             }
         }
@@ -2075,6 +2105,7 @@ class FloatingSettingsButton(
 
     override fun performClick(): Boolean {
         animate().alpha(0.85f).setDuration(120).start()
+        onClick()
         super.performClick()
         return true
     }
@@ -2213,7 +2244,7 @@ class SettingsSheet(
 private lateinit var errorView: LoadErrorView
 private lateinit var fab: FloatingSettingsButton
 
-// onCreate 末尾
+// 必须在 webView.loadUrl(serverUrl) 之前创建，避免加载失败回调早于视图初始化
 val root = findViewById<android.widget.FrameLayout>(R.id.root)
 errorView = LoadErrorView(this).apply { visibility = View.GONE }
 root.addView(errorView, android.widget.FrameLayout.LayoutParams(
@@ -2251,8 +2282,9 @@ private fun onServerChanged(url: String) {
 private fun restoreFabPosition() {
     fab.post {
         val root = findViewById<android.widget.FrameLayout>(R.id.root)
-        val x = if (store.fabX == Int.MIN_VALUE) root.width - 130 else store.fabX
-        val y = if (store.fabY == Int.MIN_VALUE) root.height - 260 else store.fabY
+        val margin = (16 * resources.displayMetrics.density).toInt()
+        val x = if (store.fabX == Int.MIN_VALUE) root.width - fab.width - margin else store.fabX
+        val y = if (store.fabY == Int.MIN_VALUE) root.height - fab.height - margin * 4 else store.fabY
         fab.x = x.toFloat()
         fab.y = y.toFloat()
     }
@@ -2290,11 +2322,12 @@ git commit -m "feat(android): 新增错误页、悬浮设置按钮与原生设�
 
 **Files:**
 - Create: `apps/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`
-- Create: `apps/android/app/src/main/res/drawable/ic_launcher_foreground.xml`（或复用 `web/public/brand/color-logo.png` 生成的 PNG）
+- Create: `apps/android/app/src/main/res/mipmap-*/ic_launcher.png` 与 `ic_launcher_foreground.png`（由 `web/public/brand/color-logo.png` 缩放生成）
 - Create: `apps/android/app/src/main/res/values/ic_launcher_background.xml`
-- Create: `apps/android/app/src/main/res/drawable/splash_logo.xml`
 - Modify: `apps/android/app/src/main/java/dev/raaa/deeptutor/MainActivity.kt`
 - Modify: `apps/android/app/src/main/AndroidManifest.xml`
+- Modify: `apps/android/app/src/main/res/values/themes.xml`
+- Modify: `apps/android/app/src/main/res/layout/activity_connect.xml`（图标改为 `@mipmap/ic_launcher`）
 
 - [ ] **Step 1: 准备图标资源**
 
@@ -2319,30 +2352,18 @@ git commit -m "feat(android): 新增错误页、悬浮设置按钮与原生设�
 
 - [ ] **Step 2: 启用 SplashScreen**
 
-`MainActivity.onCreate` 第一行：
+`MainActivity.onCreate` 第一行（`super.onCreate` 之后）安装启动页，并按「首帧渲染完成或最多 2 秒」关闭：
 
 ```kotlin
+val startedAt = android.os.SystemClock.uptimeMillis()
 val splash = androidx.core.splashscreen.SplashScreen.installSplashScreen(this)
+splash.setKeepOnScreenCondition {
+    !::webView.isInitialized ||
+        (webView.contentHeight == 0 && android.os.SystemClock.uptimeMillis() - startedAt < 2_000)
+}
 ```
 
-在 `webView.loadUrl(serverUrl)` 之后：
-
-```kotlin
-webView.webViewClient = ShellWebViewClient(
-    context = this,
-    serverUrl = { store.serverUrl.orEmpty() },
-    onMainFrameError = { message ->
-        splash.setKeepOnScreenCondition { false }
-        runOnUiThread { showLoadError(message) }
-    },
-)
-```
-
-并在页面首次绘制完成后关闭：
-
-```kotlin
-webView.post { splash.setKeepOnScreenCondition { false } }
-```
+> 不要用 `webView.post { 关掉 }`，那会在下一帧立刻关闭启动页，失去意义。
 
 `themes.xml` 追加：
 

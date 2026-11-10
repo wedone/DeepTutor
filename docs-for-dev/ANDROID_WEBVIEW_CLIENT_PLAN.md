@@ -819,22 +819,51 @@ git commit -m "feat(android): 新增服务器地址存储与首次连接页"
     } catch (e) {}
   }
 
-  function reportScroll() {
+  // 页面可能用内部容器滚动（document 的 scrollTop 恒为 0），
+  // 因此从事件目标向上找最近的可滚动祖先，而不是只看 document。
+  function nearestScrollable(node) {
+    var el = node && node.nodeType === 1 ? node : null;
+    while (el) {
+      if (el.scrollHeight > el.clientHeight + 1) {
+        var overflowY = getComputedStyle(el).overflowY;
+        if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function reportScroll(node) {
     try {
       if (!window.DeeptutorBridge) return;
-      var top = (document.scrollingElement || document.documentElement).scrollTop <= 1;
-      window.DeeptutorBridge.onScrollStateChanged(top);
+      var el = nearestScrollable(node) || document.scrollingElement || document.documentElement;
+      if (!el) return;
+      window.DeeptutorBridge.onScrollStateChanged(el.scrollTop <= 1);
     } catch (e) {}
   }
 
-  new MutationObserver(reportTheme).observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['class'],
-  });
-  document.addEventListener('scroll', reportScroll, { passive: true, capture: true });
-  document.addEventListener('touchstart', reportScroll, { passive: true });
-  reportTheme();
-  reportScroll();
+  function attach() {
+    var root = document.documentElement;
+    if (!root) {
+      // document-start 阶段 documentElement 可能尚未创建，稍后重试
+      setTimeout(attach, 16);
+      return;
+    }
+    new MutationObserver(reportTheme).observe(root, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+    document.addEventListener('scroll', function (event) {
+      reportScroll(event.target === document ? document.documentElement : event.target);
+    }, { passive: true, capture: true });
+    document.addEventListener('touchstart', function (event) {
+      reportScroll(event.target);
+    }, { passive: true });
+    reportTheme();
+    reportScroll(root);
+  }
+
+  attach();
 })();
 ```
 
@@ -847,16 +876,18 @@ import android.webkit.JavascriptInterface
 
 /** 页面到原生的最小桥接面：只接受布尔值，无路径参数，无命令执行。 */
 class ShellBridge(
-    private val onThemeChanged: (Boolean) -> Unit,
-    private val onScrollStateChanged: (Boolean) -> Unit,
+    private val themeCallback: (Boolean) -> Unit,
+    private val scrollCallback: (Boolean) -> Unit,
 ) {
     @JavascriptInterface
-    fun onThemeChanged(dark: Boolean) = onThemeChanged(dark)
+    fun onThemeChanged(dark: Boolean) = themeCallback(dark)
 
     @JavascriptInterface
-    fun onScrollStateChanged(atTop: Boolean) = onScrollStateChanged(atTop)
+    fun onScrollStateChanged(atTop: Boolean) = scrollCallback(atTop)
 }
 ```
+
+> 构造参数不要与方法同名（Kotlin 会报 recursive type checking），因此用 `themeCallback` / `scrollCallback`。
 
 - [ ] **Step 4: 在 `MainActivity.kt` 建立 WebView**
 
@@ -866,12 +897,14 @@ package dev.raaa.deeptutor
 import android.annotation.SuppressLint
 import android.graphics.Color
 import android.os.Bundle
-import android.provider.Settings
 import android.view.View
 import android.webkit.WebView
+import android.widget.FrameLayout
 import android.widget.ProgressBar
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -899,7 +932,14 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         progress = findViewById(R.id.progress)
 
-        WindowCompat.setDecorFitsSystemWindows(window, true)
+        // targetSdk 35 在 Android 15+ 强制 edge-to-edge，这里显式声明并自行处理 insets
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val root = findViewById<FrameLayout>(R.id.root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -941,8 +981,7 @@ class MainActivity : AppCompatActivity() {
     fun currentFallbackScript(): String? = fallbackScript
 
     private fun applySystemBars(dark: Boolean) {
-        window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = Color.TRANSPARENT
+        // API 35 下 statusBarColor 已失效，由根布局背景承担系统栏底色
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.isAppearanceLightStatusBars = !dark
         controller.isAppearanceLightNavigationBars = !dark
@@ -1008,6 +1047,10 @@ git commit -m "feat(android): 接入 WebView 主界面、沉浸式系统栏与�
 - [ ] **Step 2: 在 `MainActivity` 接入下拉刷新与返回键**
 
 ```kotlin
+import androidx.activity.addCallback
+```
+
+```kotlin
 private lateinit var refresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 private var lastBackAt = 0L
 
@@ -1019,20 +1062,18 @@ refresh.setOnRefreshListener {
 }
 refresh.setOnChildScrollUpCallback { _, _ -> !atPageTop }
 
-// 追加方法
-@Deprecated("Deprecated in Java")
-override fun onBackPressed() {
+onBackPressedDispatcher.addCallback(this) {
     if (webView.canGoBack()) {
         webView.goBack()
-        return
+        return@addCallback
     }
     val now = System.currentTimeMillis()
     if (now - lastBackAt < 2_000) {
-        super.onBackPressed()
-        return
+        finish()
+        return@addCallback
     }
     lastBackAt = now
-    android.widget.Toast.makeText(this, R.string.back_to_exit, android.widget.Toast.LENGTH_SHORT).show()
+    android.widget.Toast.makeText(this@MainActivity, R.string.back_to_exit, android.widget.Toast.LENGTH_SHORT).show()
 }
 ```
 
@@ -1576,31 +1617,31 @@ Expected: `BUILD SUCCESSFUL`。
 
 ```kotlin
 class ShellBridge(
-    private val onThemeChanged: (Boolean) -> Unit,
-    private val onScrollStateChanged: (Boolean) -> Unit,
-    private val onBlobBegin: (String, String, String) -> Boolean,
-    private val onBlobChunk: (String, Int, String) -> Boolean,
-    private val onBlobFinish: (String) -> Unit,
-    private val onBlobFailed: (String) -> Unit,
+    private val themeCallback: (Boolean) -> Unit,
+    private val scrollCallback: (Boolean) -> Unit,
+    private val blobBegin: (String, String, String) -> Boolean,
+    private val blobChunk: (String, Int, String) -> Boolean,
+    private val blobFinish: (String) -> Unit,
+    private val blobFailed: (String) -> Unit,
 ) {
     @JavascriptInterface
-    fun onThemeChanged(dark: Boolean) = onThemeChanged(dark)
+    fun onThemeChanged(dark: Boolean) = themeCallback(dark)
 
     @JavascriptInterface
-    fun onScrollStateChanged(atTop: Boolean) = onScrollStateChanged(atTop)
+    fun onScrollStateChanged(atTop: Boolean) = scrollCallback(atTop)
 
     @JavascriptInterface
-    fun beginBlob(id: String, name: String, mime: String): Boolean = onBlobBegin(id, name, mime)
+    fun beginBlob(id: String, name: String, mime: String): Boolean = blobBegin(id, name, mime)
 
     @JavascriptInterface
     fun appendBlob(id: String, index: Int, base64: String): Boolean =
-        onBlobChunk(id, index, base64)
+        blobChunk(id, index, base64)
 
     @JavascriptInterface
-    fun finishBlob(id: String) = onBlobFinish(id)
+    fun finishBlob(id: String) = blobFinish(id)
 
     @JavascriptInterface
-    fun onDownloadFailed(reason: String) = onBlobFailed(reason)
+    fun onDownloadFailed(reason: String) = blobFailed(reason)
 }
 ```
 

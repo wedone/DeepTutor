@@ -378,3 +378,25 @@ Web 端增加 `viewportFit: "cover"` 并补齐顶部 safe-area 后，壳端去�
 | 悬浮按钮遮挡内容 | 半透明、可拖动、自动贴边隐藏 |
 | 无签名 Secret 时无法产出正式包 | 明确降级为 debug 包并标注，不静默发布 |
 | 本机无 Android SDK 导致无法本地调试 | 以 CI 产物 + `adb install` 验证；需要时临时安装 SDK |
+
+## 15. 验收记录
+
+### 2026-11-11 静态验收（本机，无真机）
+
+环境：Windows、JDK 21 (Temurin)、Android SDK 35 / build-tools 35.0.0、Gradle 8.9。
+
+已通过：
+
+| 项 | 结果 |
+| --- | --- |
+| 单元测试 | `ServerUrlTest` 6 + `FileNameTest` 3 + `BlobAssemblerTest` 3 = 12 通过，0 失败 |
+| Debug 构建 | `assembleDebug` BUILD SUCCESSFUL |
+| Release 构建（R8） | `assembleRelease` BUILD SUCCESSFUL |
+| APK 元数据 | `package=dev.raaa.deeptutor`、`versionName=1.7.2`、`versionCode=10702`、`minSdk=26`、`targetSdk=35` |
+| 启动入口 | `launchable-activity=dev.raaa.deeptutor.MainActivity` |
+| 图标与名称 | `application-label=DeepTutor`，`application-icon-640` 存在 |
+| CI 工作流 | `android-release.yml` YAML 解析通过，11 个 step |
+
+未验证（需要连接真机，逐项对应 §11.2）：
+
+1. 首次安装启动与连接页；2. 二次启动免登录；3. 系统栏深浅色；4. 返回键层级与双击退出；5. 附件三选一；5b. 纯图片入口直达相册；5c. 取消后输入框恢复；6. `http(s)` 下载；7. `blob:` 下载（笔记/闪卡/练习模板）；8. 外链跳系统浏览器（含 `target=_blank`）；9. 下拉刷新仅在顶部触发；10. 断网错误页与重试；11. 悬浮按钮拖动/贴边/位置恢复；12. 清除站点数据回到连接页；13. 旋转屏幕不重建。

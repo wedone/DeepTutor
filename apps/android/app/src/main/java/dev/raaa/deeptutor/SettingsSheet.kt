@@ -14,6 +14,8 @@ class SettingsSheet(
     private val store: ServerStore,
     private val webView: WebView,
     private val onServerChanged: (String) -> Unit,
+    private val onImmersiveChanged: (Boolean) -> Unit,
+    private val onCustomLayerChanged: (String) -> Unit,
 ) {
 
     fun show() {
@@ -23,6 +25,26 @@ class SettingsSheet(
         val layout = view.findViewById<TextInputLayout>(R.id.serverLayout)
         val input = view.findViewById<TextInputEditText>(R.id.serverInput)
         input.setText(store.serverUrl.orEmpty())
+
+        val immersive = view.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(
+            R.id.immersiveSwitch,
+        )
+        immersive.isChecked = store.immersive
+        immersive.setOnCheckedChangeListener { _, checked -> onImmersiveChanged(checked) }
+
+        val customLayout = view.findViewById<TextInputLayout>(R.id.customLayerLayout)
+        val customInput = view.findViewById<TextInputEditText>(R.id.customLayerInput)
+        customInput.setText(store.customLayerUrl.orEmpty())
+        view.findViewById<android.view.View>(R.id.applyCustomLayer).setOnClickListener {
+            val raw = customInput.text?.toString().orEmpty().trim()
+            val normalized = if (raw.isEmpty()) "" else ServerUrl.normalize(raw)
+            if (normalized == null) {
+                customLayout.error = context.getString(R.string.connect_invalid)
+                return@setOnClickListener
+            }
+            dialog.dismiss()
+            onCustomLayerChanged(normalized)
+        }
 
         view.findViewById<android.view.View>(R.id.saveServer).setOnClickListener {
             val normalized = ServerUrl.normalize(input.text?.toString().orEmpty())

@@ -113,5 +113,21 @@
     }
     return originalOpen.apply(window, arguments);
   };
+
+  // 打开弹层（资源菜单、模型选择等）时收起软键盘，避免键盘遮挡浮层
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    if (!target.closest('button[aria-haspopup="dialog"]')) return;
+    var active = document.activeElement;
+    if (!active) return;
+    var tag = active.tagName;
+    if (tag === 'TEXTAREA' || tag === 'INPUT' || active.isContentEditable) {
+      active.blur();
+      if (window.DeeptutorBridge && window.DeeptutorBridge.hideKeyboard) {
+        window.DeeptutorBridge.hideKeyboard();
+      }
+    }
+  }, true);
 })();
 

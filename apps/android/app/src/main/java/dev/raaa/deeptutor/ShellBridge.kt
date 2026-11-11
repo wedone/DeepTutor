@@ -14,6 +14,7 @@ class ShellBridge(
     private val blobChunk: (String, Int, String) -> Boolean,
     private val blobFinish: (String) -> Unit,
     private val blobFailed: (String) -> Unit,
+    private val hideKeyboardCallback: () -> Unit,
 ) {
     @JavascriptInterface
     fun onThemeChanged(dark: Boolean) = themeCallback(dark)
@@ -33,4 +34,7 @@ class ShellBridge(
 
     @JavascriptInterface
     fun onDownloadFailed(reason: String) = blobFailed(reason)
+
+    @JavascriptInterface
+    fun hideKeyboard() = hideKeyboardCallback()
 }

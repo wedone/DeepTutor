@@ -27,6 +27,20 @@ class ServerStore(context: Context) {
         get() = prefs.getBoolean(KEY_HINT_SHOWN, false)
         set(value) = prefs.edit().putBoolean(KEY_HINT_SHOWN, value).apply()
 
+    /** 沉浸模式：隐藏状态栏，从屏幕边缘下滑可临时调出。 */
+    var immersive: Boolean
+        get() = prefs.getBoolean(KEY_IMMERSIVE, true)
+        set(value) = prefs.edit().putBoolean(KEY_IMMERSIVE, value).apply()
+
+    /** 自定义注入层的目录地址，需包含 custom.css / custom.js；为空表示不启用。 */
+    var customLayerUrl: String?
+        get() = prefs.getString(KEY_CUSTOM_LAYER_URL, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value.isNullOrBlank()) remove(KEY_CUSTOM_LAYER_URL) else putString(KEY_CUSTOM_LAYER_URL, value)
+            }.apply()
+        }
+
     fun clear() {
         prefs.edit().clear().apply()
     }
@@ -36,5 +50,7 @@ class ServerStore(context: Context) {
         const val KEY_FAB_X = "fab_x"
         const val KEY_FAB_Y = "fab_y"
         const val KEY_HINT_SHOWN = "connect_hint_shown"
+        const val KEY_IMMERSIVE = "immersive"
+        const val KEY_CUSTOM_LAYER_URL = "custom_layer_url"
     }
 }

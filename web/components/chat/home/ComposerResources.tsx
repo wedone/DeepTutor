@@ -204,8 +204,12 @@ export default function ComposerResources({
   useEffect(() => {
     if (!open || !positioned) return;
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
-    if (currentKey) backRef.current?.focus({ preventScroll: true });
-    else searchRef.current?.focus({ preventScroll: true });
+    if (currentKey) {
+      backRef.current?.focus({ preventScroll: true });
+    } else if (window.matchMedia("(hover: hover)").matches) {
+      // 触屏设备不自动聚焦搜索框，避免软键盘弹出遮挡浮层
+      searchRef.current?.focus({ preventScroll: true });
+    }
   }, [open, currentKey, positioned]);
 
   const back = async () => {

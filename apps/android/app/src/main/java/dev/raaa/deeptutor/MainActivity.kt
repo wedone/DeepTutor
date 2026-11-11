@@ -26,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var store: ServerStore
     private lateinit var refresh: SwipeRefreshLayout
     private lateinit var uploadPicker: UploadPicker
+    private lateinit var customLayer: CustomLayer
     private lateinit var errorView: LoadErrorView
     private lateinit var fab: FloatingSettingsButton
     private var atPageTop = true
@@ -47,6 +48,7 @@ class MainActivity : AppCompatActivity() {
         uploadPicker = UploadPicker(this)
 
         store = ServerStore(this)
+        customLayer = CustomLayer(this)
         val serverUrl = store.serverUrl
         if (serverUrl.isNullOrBlank()) {
             startActivity(android.content.Intent(this, ConnectActivity::class.java))
@@ -123,11 +125,13 @@ class MainActivity : AppCompatActivity() {
                 blobChunk = downloads::append,
                 blobFinish = downloads::finish,
                 blobFailed = downloads::failed,
+                hideKeyboardCallback = { hideKeyboard() },
             ),
             "DeeptutorBridge",
         )
 
         applySystemBars(isSystemDark())
+        applyImmersive(store.immersive)
 
         refresh = findViewById(R.id.refresh)
         refresh.setOnRefreshListener {
@@ -163,7 +167,7 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         fab = FloatingSettingsButton(this, store) {
-            SettingsSheet(this, store, webView, ::onServerChanged).show()
+            SettingsSheet(this, store, webView, ::onServerChanged, ::onImmersiveChanged, ::onCustomLayerChanged).show()
         }
         val fabSize = (40 * resources.displayMetrics.density).toInt()
         root.addView(fab, FrameLayout.LayoutParams(fabSize, fabSize))
@@ -183,12 +187,17 @@ class MainActivity : AppCompatActivity() {
     private var fallbackScript: String? = null
 
     private fun installDocumentStartScript() {
-        val script = assets.open("shell.js").bufferedReader().use { it.readText() }
+        val scripts = mutableListOf(
+            assets.open("shell.js").bufferedReader().use { it.readText() },
+        )
+        customLayer.css()?.let { scripts += CustomLayer.cssScript(it) }
+        customLayer.script()?.let { scripts += CustomLayer.jsScript(it) }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
+            // 分段注入，单段出错不影响壳层自身脚本
+            scripts.forEach { WebViewCompat.addDocumentStartJavaScript(webView, it, setOf("*")) }
         } else {
-            // 旧内核：保存脚本，由 Task 9 的 ShellWebViewClient 在 onPageFinished 兜底注入
-            fallbackScript = script
+            // 旧内核：由 ShellWebViewClient 在 onPageFinished 兜底注入
+            fallbackScript = scripts.joinToString("\n")
         }
     }
 
@@ -203,8 +212,35 @@ class MainActivity : AppCompatActivity() {
                 errorView.visibility = View.GONE
                 webView.reload()
             },
-            onSettings = { SettingsSheet(this, store, webView, ::onServerChanged).show() },
+            onSettings = { SettingsSheet(this, store, webView, ::onServerChanged, ::onImmersiveChanged, ::onCustomLayerChanged).show() },
         )
+    }
+
+    private fun onImmersiveChanged(enabled: Boolean) {
+        store.immersive = enabled
+        applyImmersive(enabled)
+    }
+
+    /** 保存注入层地址并后台拉取；成功后重载页面使新样式生效。 */
+    private fun onCustomLayerChanged(url: String) {
+        store.customLayerUrl = url.trim().ifBlank { null }
+        val target = store.customLayerUrl
+        Thread {
+            val ok = if (target == null) {
+                customLayer.clear()
+                true
+            } else {
+                customLayer.refresh(target)
+            }
+            runOnUiThread {
+                android.widget.Toast.makeText(
+                    this,
+                    if (ok) R.string.custom_layer_saved else R.string.custom_layer_failed,
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+                if (ok) webView.reload()
+            }
+        }.start()
     }
 
     private fun onServerChanged(url: String) {
@@ -234,6 +270,24 @@ class MainActivity : AppCompatActivity() {
         controller.isAppearanceLightStatusBars = !dark
         controller.isAppearanceLightNavigationBars = !dark
         window.decorView.setBackgroundColor(if (dark) Color.parseColor("#101114") else Color.WHITE)
+    }
+
+    /** 沉浸模式：隐藏状态栏，边缘下滑可临时调出；关闭后恢复常显。 */
+    private fun applyImmersive(enabled: Boolean) {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        if (enabled) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.statusBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+            as? android.view.inputmethod.InputMethodManager ?: return
+        imm.hideSoftInputFromWindow(webView.windowToken, 0)
     }
 
     private fun isSystemDark(): Boolean {

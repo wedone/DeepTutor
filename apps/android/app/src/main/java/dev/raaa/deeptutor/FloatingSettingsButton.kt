@@ -2,6 +2,8 @@ package dev.raaa.deeptutor
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -21,15 +23,37 @@ class FloatingSettingsButton(
     private var downRawY = 0f
     private var dragged = false
 
+    private val handler = Handler(Looper.getMainLooper())
+    private val fadeOut = Runnable { animate().alpha(0.3f).setDuration(300).start() }
+
     init {
         inflate(context, R.layout.view_floating_settings, this)
         alpha = 0.85f
+        scheduleFade()
+    }
+
+    /** 操作时恢复可见，并重置闲置计时。 */
+    private fun wake() {
+        handler.removeCallbacks(fadeOut)
+        animate().cancel()
+        alpha = 0.85f
+    }
+
+    private fun scheduleFade() {
+        handler.removeCallbacks(fadeOut)
+        handler.postDelayed(fadeOut, IDLE_FADE_MS)
+    }
+
+    override fun onDetachedFromWindow() {
+        handler.removeCallbacks(fadeOut)
+        super.onDetachedFromWindow()
     }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                wake()
                 downRawX = event.rawX
                 downRawY = event.rawY
                 dragged = false
@@ -49,10 +73,12 @@ class FloatingSettingsButton(
             }
             MotionEvent.ACTION_UP -> {
                 if (dragged) snapToEdge() else performClick()
+                scheduleFade()
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 if (dragged) snapToEdge()
+                scheduleFade()
                 return true
             }
         }
@@ -62,17 +88,19 @@ class FloatingSettingsButton(
     private fun snapToEdge() {
         val parentView = parent as? View ?: return
         val targetX = if (x + width / 2 < parentView.width / 2f) 0f else (parentView.width - width).toFloat()
-        animate().x(targetX).setDuration(180).withEndAction {
-            animate().alpha(0.3f).setDuration(200).start()
-        }.start()
+        animate().x(targetX).setDuration(180).start()
         store.fabX = targetX.toInt()
         store.fabY = y.toInt()
     }
 
     override fun performClick(): Boolean {
-        animate().alpha(0.85f).setDuration(120).start()
+        wake()
         onClick()
         super.performClick()
         return true
+    }
+
+    private companion object {
+        const val IDLE_FADE_MS = 2_000L
     }
 }

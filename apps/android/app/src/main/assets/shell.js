@@ -223,6 +223,161 @@
   }
 })();
 
+// 首页「继续上次对话」：Web 端 /chat 每次都是新会话，这里在空会话页插一张卡片，
+// 回到最近访问过的会话。记录只在本机 localStorage，不上报服务端。
+(function () {
+  if (window.__dtContinueInstalled) return;
+  window.__dtContinueInstalled = true;
+
+  var KEY = 'dt_last_chat_session';
+  var CARD_ID = 'dt-continue-card';
+  var STYLE_ID = 'dt-continue-style';
+  var MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+  var lastPath = null;
+  var timer = null;
+
+  function readLast() {
+    try {
+      var raw = localStorage.getItem(KEY);
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      if (!data || typeof data.id !== 'string' || !data.ts) return null;
+      if (Date.now() - data.ts > MAX_AGE) return null;
+      return data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 只有进入过真实会话（URL 带会话 id）才记录；空会话页停留不会产生记录。 */
+  function remember() {
+    var match = /^\/chat\/([A-Za-z0-9_-]+)\/?$/.exec(location.pathname);
+    if (!match) return;
+    try {
+      localStorage.setItem(KEY, JSON.stringify({ id: match[1], ts: Date.now() }));
+    } catch (e) {}
+  }
+
+  function relativeTime(ts) {
+    var minutes = Math.floor((Date.now() - ts) / 60000);
+    if (minutes < 1) return '刚刚';
+    if (minutes < 60) return minutes + ' 分钟前';
+    var hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + ' 小时前';
+    var days = Math.floor(hours / 24);
+    return days === 1 ? '昨天' : days + ' 天前';
+  }
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    var style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = [
+      '#' + CARD_ID + '{display:flex;align-items:center;gap:10px;width:100%;margin:0 0 12px;',
+      'padding:12px 14px;border:1px solid var(--border,rgba(0,0,0,.08));border-radius:14px;',
+      'background:var(--card,#fff);color:var(--foreground,#37352f);font:inherit;text-align:left;',
+      'cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background-color 140ms ease;}',
+      '#' + CARD_ID + ':active{background:var(--muted,rgba(0,0,0,.04));}',
+      '#' + CARD_ID + ' .dt-continue-icon{display:flex;align-items:center;justify-content:center;',
+      'width:32px;height:32px;border-radius:10px;flex-shrink:0;',
+      'background:var(--muted,rgba(0,0,0,.04));color:var(--muted-foreground,#8a8a8a);}',
+      '#' + CARD_ID + ' .dt-continue-body{display:flex;flex-direction:column;gap:2px;',
+      'min-width:0;flex:1;}',
+      '#' + CARD_ID + ' .dt-continue-title{font-size:14px;font-weight:600;line-height:1.3;}',
+      '#' + CARD_ID + ' .dt-continue-meta{font-size:12px;line-height:1.3;',
+      'color:var(--muted-foreground,#8a8a8a);}',
+    ].join('');
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function openSession(id) {
+    var target = '/chat/' + id;
+    var links = document.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var el = links[i];
+      if (el.closest('#' + CARD_ID)) continue;
+      var path = (el.getAttribute('href') || '').split('?')[0].split('#')[0];
+      if (path === target) {
+        el.click();
+        return;
+      }
+    }
+    location.assign(target);
+  }
+
+  function removeCard() {
+    var card = document.getElementById(CARD_ID);
+    if (card) card.remove();
+  }
+
+  function buildCard(last) {
+    var card = document.createElement('button');
+    card.id = CARD_ID;
+    card.type = 'button';
+    card.innerHTML =
+      '<span class="dt-continue-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" ' +
+      'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" ' +
+      'aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4.5V9h4.5"/>' +
+      '<path d="M12 8v4.2l2.8 1.7"/></svg></span>' +
+      '<span class="dt-continue-body"><span class="dt-continue-title">继续上次对话</span>' +
+      '<span class="dt-continue-meta" id="' + CARD_ID + '-meta"></span></span>';
+    card.addEventListener('click', function () {
+      openSession(last.id);
+    });
+    return card;
+  }
+
+  function mount() {
+    if (location.pathname !== lastPath) {
+      lastPath = location.pathname;
+      remember();
+    }
+    var starters = document.querySelector('.dt-starters');
+    if (!starters || location.pathname !== '/chat') {
+      removeCard();
+      return;
+    }
+    var last = readLast();
+    if (!last) {
+      removeCard();
+      return;
+    }
+    ensureStyle();
+    var meta = document.getElementById(CARD_ID + '-meta');
+    if (meta) {
+      meta.textContent = relativeTime(last.ts);
+    }
+    if (!document.getElementById(CARD_ID)) {
+      starters.insertBefore(buildCard(last), starters.firstChild);
+    }
+  }
+
+  function schedule() {
+    if (timer) return;
+    timer = setTimeout(function () {
+      timer = null;
+      try {
+        mount();
+      } catch (e) {}
+    }, 300);
+  }
+
+  function start() {
+    schedule();
+    try {
+      new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    } catch (e) {}
+    // 路由变化不一定伴随 DOM 结构变化，低频轮询兜底
+    setInterval(schedule, 1000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
+
 // 底部导航 dock：Web 端在窄屏下只把侧边栏变成抽屉，一级入口仍藏在左上角。
 // 这里注入移动端常见的底部导航，隐藏页面顶部 44px 汉堡条，
 // 把抽屉入口收进「更多」；软键盘或原生数学键盘打开时自动隐藏。
@@ -303,13 +458,25 @@
   }
 
   function navigate(href) {
-    if (location.pathname === href || location.pathname.indexOf(href + '/') === 0) return;
+    var path = location.pathname;
+    // 首页是「新对话」入口：/chat/<id> 时点首页仍需回到空会话，不能按前缀判等
+    var same = href === '/chat'
+      ? path === '/chat'
+      : (path === href || path.indexOf(href + '/') === 0);
+    if (same) return;
+    if (href === '/chat' && startNewChat()) {
+      // 侧栏按钮无响应时（例如被 Web 改版去掉）回退整页跳转
+      setTimeout(function () {
+        if (location.pathname === path) location.assign('/chat');
+      }, 500);
+      return;
+    }
     var link = findLink(href);
     if (!link) {
       location.assign(href);
       return;
     }
-    var before = location.pathname;
+    var before = path;
     try {
       link.click();
     } catch (e) {}
@@ -317,6 +484,25 @@
     setTimeout(function () {
       if (location.pathname === before) location.assign(href);
     }, 350);
+  }
+
+  /** 复用侧边栏的「新对话」按钮，避免整页刷新；找不到时返回 false。 */
+  function startNewChat() {
+    var buttons = document.querySelectorAll('button');
+    for (var i = 0; i < buttons.length; i++) {
+      var el = buttons[i];
+      if (el.closest('#' + DOCK_ID)) continue;
+      var text = (el.textContent || '').trim();
+      if (text === '新对话' || text === 'New chat') {
+        try {
+          el.click();
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+    }
+    return false;
   }
 
   function buildDock() {

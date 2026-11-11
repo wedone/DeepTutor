@@ -40,6 +40,9 @@ class MainActivity : AppCompatActivity() {
     private var mathKeyboard: MathKeyboardView? = null
     private var atPageTop = true
     private var lastBackAt = 0L
+    private var barsBottomPx = 0
+    private var imeBottomPx = 0
+    private var panelBottomPx = 0
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,7 +77,12 @@ class MainActivity : AppCompatActivity() {
         val root = findViewById<FrameLayout>(R.id.root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            barsBottomPx = bars.bottom
+            imeBottomPx = ime.bottom
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            // edge-to-edge 下系统不会自动缩窗口，这里按 IME 实际高度压缩内容区
+            syncContentInset()
             insets
         }
 
@@ -320,8 +328,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMathKeyboard() {
         hideKeyboard()
-        // 面板显示期间不让系统输入法挤压布局
-        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         val root = findViewById<FrameLayout>(R.id.root)
         val panel = mathKeyboard ?: MathKeyboardView(
             context = this,
@@ -342,19 +348,24 @@ class MainActivity : AppCompatActivity() {
         panel.setDark(isSystemDark())
         panel.bringToFront()
         // 像软键盘一样压缩页面区域，聊天输入框随之上移
-        syncContentInset(panel.layoutParams.height)
+        panelBottomPx = panel.layoutParams.height
+        syncContentInset()
     }
 
     private fun hideMathKeyboard() {
         mathKeyboard?.visibility = View.GONE
-        syncContentInset(0)
-        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        panelBottomPx = 0
+        syncContentInset()
     }
 
-    /** 把主 WebView 的底部留出面板高度，等效于 adjustResize。 */
-    private fun syncContentInset(panelHeightPx: Int) {
+    /**
+     * 内容区底部让位：数学键盘面板优先，否则按「系统输入法超出导航栏的部分」让位。
+     * 效果等同原生 App 的 adjustResize，键盘收起后自动恢复满屏。
+     */
+    private fun syncContentInset() {
         if (!::refresh.isInitialized) return
-        val margin = if (panelHeightPx <= 0) 0 else panelHeightPx + dp(8)
+        val imeExtra = (imeBottomPx - barsBottomPx).coerceAtLeast(0)
+        val margin = if (panelBottomPx > 0) panelBottomPx else imeExtra
         val lp = refresh.layoutParams as FrameLayout.LayoutParams
         if (lp.bottomMargin == margin) return
         lp.bottomMargin = margin
@@ -370,7 +381,8 @@ class MainActivity : AppCompatActivity() {
         val target = (cssHeight * density).toInt().coerceIn(dp(240), maxPx)
         panel.layoutParams = panel.layoutParams.apply { height = target }
         panel.requestLayout()
-        syncContentInset(target)
+        panelBottomPx = target
+        syncContentInset()
     }
 
     /** 把数学键盘选中的公式写入聊天输入框。 */

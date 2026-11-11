@@ -42,14 +42,30 @@ class MathKeyboardView(
                 view: WebView,
                 request: WebResourceRequest,
             ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+
+            override fun onPageFinished(view: WebView, url: String) {
+                super.onPageFinished(view, url)
+                applyTheme()
+                view.evaluateJavascript("window.dtShowKeyboard && window.dtShowKeyboard()", null)
+            }
         }
         webView.addJavascriptInterface(Bridge(), "DeepTutorMath")
         addView(webView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         webView.loadUrl("https://${MathLiveAssetHandler.DOMAIN}${MathLiveAssetHandler.PATH_PREFIX}mathlive_editor.html")
     }
 
+    private var darkTheme = false
+
     fun setDark(dark: Boolean) {
-        webView.evaluateJavascript("mlMixedSetTheme($dark)", null)
+        darkTheme = dark
+        applyTheme()
+    }
+
+    private fun applyTheme() {
+        webView.evaluateJavascript(
+            "typeof mlMixedSetTheme === 'function' && mlMixedSetTheme($darkTheme)",
+            null,
+        )
     }
 
     fun destroy() {

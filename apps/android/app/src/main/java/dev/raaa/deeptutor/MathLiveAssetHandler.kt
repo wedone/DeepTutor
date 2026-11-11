@@ -30,6 +30,7 @@ class MathLiveAssetHandler(private val assets: AssetManager) : WebViewAssetLoade
     }
 
     private fun mimeOf(name: String): String = when {
+        name.endsWith(".html") || name.endsWith(".htm") -> "text/html"
         name.endsWith(".mjs") || name.endsWith(".js") -> "application/javascript"
         name.endsWith(".css") -> "text/css"
         name.endsWith(".woff2") -> "font/woff2"

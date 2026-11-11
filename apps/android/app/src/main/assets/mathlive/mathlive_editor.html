@@ -922,6 +922,18 @@
     setTimeout(mlMixedFixKeys, 50);
     setTimeout(mlMixedSetupCustomCommands, 50);
     setTimeout(mlMixedSetupCustomCommands, 300);
+
+    /* Android 宿主：页面加载后主动显示常驻键盘并聚焦公式框 */
+    function dtShowKeyboard() {
+      try {
+        var mfEl = document.getElementById('mf');
+        if (mfEl) mfEl.focus();
+        if (typeof mathVirtualKeyboard !== 'undefined') mathVirtualKeyboard.show();
+      } catch (eShow) {}
+    }
+    window.dtShowKeyboard = dtShowKeyboard;
+    setTimeout(dtShowKeyboard, 400);
+    setTimeout(dtShowKeyboard, 1000);
   })();
 </script>
 </body>

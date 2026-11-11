@@ -152,3 +152,74 @@
   };
 })();
 
+// 工作区下拉菜单注入「APP设置」入口（位于 Web 版本号下方）。
+// 菜单由页面按需渲染，路由切换会重建 DOM，因此用 MutationObserver 补挂。
+(function () {
+  var PANEL_SELECTOR = '.dt-workspace-panel';
+  var ITEM_ID = 'dt-app-settings';
+  var scheduled = false;
+
+  function openSettings() {
+    try {
+      if (window.DeeptutorBridge && window.DeeptutorBridge.openSettings) {
+        window.DeeptutorBridge.openSettings();
+      }
+    } catch (e) {}
+    // 通知页面收起菜单（菜单为受控组件，不会感知到注入节点的点击）
+    try {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true,
+      }));
+    } catch (e2) {}
+  }
+
+  function mount() {
+    var panel = document.querySelector(PANEL_SELECTOR);
+    if (!panel || panel.querySelector('#' + ITEM_ID)) return;
+    var footer = panel.querySelector('.dt-menu-footer');
+    var btn = document.createElement('button');
+    btn.id = ITEM_ID;
+    btn.type = 'button';
+    btn.textContent = 'APP设置';
+    // 复用版本号行的字号、颜色与内边距，保证左对齐且视觉一致
+    var fs = footer ? getComputedStyle(footer) : null;
+    btn.style.cssText = 'display:flex;align-items:center;width:100%;margin:0;' +
+      'background:none;border:none;cursor:pointer;text-align:left;' +
+      (fs
+        ? 'font-size:' + fs.fontSize + ';line-height:' + fs.lineHeight +
+          ';color:' + fs.color + ';padding:' + fs.padding + ';'
+        : 'font-size:11.5px;line-height:17.25px;color:var(--muted-foreground);padding:2px 4px 0 8px;');
+    btn.addEventListener('click', openSettings);
+    if (footer && footer.parentElement === panel) {
+      footer.insertAdjacentElement('afterend', btn);
+    } else {
+      panel.appendChild(btn);
+    }
+  }
+
+  function scheduleMount() {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(function () {
+      scheduled = false;
+      mount();
+    });
+  }
+
+  function start() {
+    mount();
+    try {
+      new MutationObserver(scheduleMount).observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+    } catch (e) {}
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
+

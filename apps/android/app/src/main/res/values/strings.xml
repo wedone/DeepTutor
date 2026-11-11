@@ -1,7 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">DeepTutor</string>
     <string name="connect_title">连接到你的 DeepTutor</string>
-    <string name="connect_subtitle">输入你部署的 Web 端地址，例如 https://your-domain:4433</string>
+    <string name="connect_subtitle">输入你部署的 Web 端地址\n例如 https://your-domain:port</string>
     <string name="connect_url_hint">服务器地址</string>
     <string name="connect_action">连接</string>
     <string name="connect_invalid">地址无效，请检查格式</string>
@@ -15,10 +16,17 @@
     <string name="upload_source_gallery">从相册选择</string>
     <string name="upload_source_file">选择文件</string>
     <string name="settings_title">设置</string>
+    <string name="settings_subtitle">服务器地址与客户端偏好</string>
+    <string name="settings_section_connection">连接</string>
+    <string name="settings_section_appearance">外观与输入</string>
+    <string name="settings_section_advanced">高级</string>
     <string name="settings_save_server">保存地址并重新加载</string>
     <string name="settings_reload">重新加载页面</string>
     <string name="settings_clear_data">清除站点数据</string>
-    <string name="settings_immersive">沉浸模式（隐藏状态栏，边缘下滑可临时调出）</string>
+    <string name="settings_immersive">沉浸模式</string>
+    <string name="settings_immersive_desc">隐藏状态栏，边缘下滑可临时调出</string>
+    <string name="settings_math_keyboard">数学公式键盘</string>
+    <string name="settings_math_keyboard_desc">在页面上显示 Σ 悬浮按钮，用于输入 LaTeX 公式</string>
     <string name="settings_custom_layer_hint">自定义样式目录（含 custom.css / custom.js，留空关闭）</string>
     <string name="settings_custom_layer_apply">保存并应用注入</string>
     <string name="custom_layer_saved">注入配置已更新</string>

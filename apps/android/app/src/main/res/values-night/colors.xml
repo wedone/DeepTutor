@@ -1,0 +1,14 @@
+<resources>
+    <!-- 设置面板配色，对齐 Web 端的 Notion 风格（深色） -->
+    <color name="settings_surface">#191919</color>
+    <color name="settings_text_primary">#E8E6E3</color>
+    <color name="settings_text_secondary">#9B9A97</color>
+    <color name="settings_field">#252525</color>
+    <color name="settings_divider">#2F2F2F</color>
+    <color name="settings_primary">#E8E6E3</color>
+    <color name="settings_on_primary">#191919</color>
+    <color name="settings_danger">#FF7369</color>
+    <color name="settings_ripple">#33FFFFFF</color>
+    <color name="settings_switch_thumb">#FFFFFF</color>
+    <color name="settings_switch_track_off">#3F3F3F</color>
+</resources>

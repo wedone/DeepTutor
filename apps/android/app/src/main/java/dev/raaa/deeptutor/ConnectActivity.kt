@@ -3,12 +3,11 @@ package dev.raaa.deeptutor
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
+import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -25,8 +24,7 @@ class ConnectActivity : AppCompatActivity() {
         store = ServerStore(this)
         setContentView(R.layout.activity_connect)
 
-        val input = findViewById<TextInputEditText>(R.id.urlInput)
-        val layout = findViewById<TextInputLayout>(R.id.urlLayout)
+        val input = findViewById<EditText>(R.id.urlInput)
         val error = findViewById<TextView>(R.id.urlError)
         val button = findViewById<MaterialButton>(R.id.connectButton)
 
@@ -37,10 +35,10 @@ class ConnectActivity : AppCompatActivity() {
         button.setOnClickListener {
             val normalized = ServerUrl.normalize(input.text?.toString().orEmpty())
             if (normalized == null) {
-                layout.error = getString(R.string.connect_invalid)
+                error.text = getString(R.string.connect_invalid)
+                error.visibility = View.VISIBLE
                 return@setOnClickListener
             }
-            layout.error = null
             error.visibility = View.GONE
             if (ServerUrl.isInsecure(normalized)) {
                 com.google.android.material.dialog.MaterialAlertDialogBuilder(this@ConnectActivity)

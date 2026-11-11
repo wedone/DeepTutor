@@ -15,17 +15,10 @@ class ServerStore(context: Context) {
             }.apply()
         }
 
-    var fabX: Int
-        get() = prefs.getInt(KEY_FAB_X, Int.MIN_VALUE)
-        set(value) = prefs.edit().putInt(KEY_FAB_X, value).apply()
-
-    var fabY: Int
-        get() = prefs.getInt(KEY_FAB_Y, Int.MIN_VALUE)
-        set(value) = prefs.edit().putInt(KEY_FAB_Y, value).apply()
-
-    var hintShown: Boolean
-        get() = prefs.getBoolean(KEY_HINT_SHOWN, false)
-        set(value) = prefs.edit().putBoolean(KEY_HINT_SHOWN, value).apply()
+    /** 数学公式键盘入口：关闭后隐藏页面上的 Σ 悬浮按钮。 */
+    var mathKeyboardEnabled: Boolean
+        get() = prefs.getBoolean(KEY_MATH_KEYBOARD, true)
+        set(value) = prefs.edit().putBoolean(KEY_MATH_KEYBOARD, value).apply()
 
     /** 沉浸模式：隐藏状态栏，从屏幕边缘下滑可临时调出。 */
     var immersive: Boolean
@@ -47,10 +40,8 @@ class ServerStore(context: Context) {
 
     private companion object {
         const val KEY_SERVER_URL = "server_url"
-        const val KEY_FAB_X = "fab_x"
-        const val KEY_FAB_Y = "fab_y"
-        const val KEY_HINT_SHOWN = "connect_hint_shown"
         const val KEY_IMMERSIVE = "immersive"
         const val KEY_CUSTOM_LAYER_URL = "custom_layer_url"
+        const val KEY_MATH_KEYBOARD = "math_keyboard_enabled"
     }
 }

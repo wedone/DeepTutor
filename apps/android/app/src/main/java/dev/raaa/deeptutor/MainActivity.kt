@@ -35,7 +35,6 @@ class MainActivity : AppCompatActivity() {
             .build()
     }
     private lateinit var errorView: LoadErrorView
-    private lateinit var fab: FloatingSettingsButton
     private lateinit var mathTrigger: android.widget.TextView
     private var mathKeyboard: MathKeyboardView? = null
     private var atPageTop = true
@@ -95,6 +94,8 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
             userAgentString = "$userAgentString DeepTutorAndroid/${BuildConfig.VERSION_NAME}"
         }
+        // Debug 包开放 chrome://inspect，便于排查注入层与 Web DOM
+        if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
 
         installDocumentStartScript()
         webView.webViewClient = ShellWebViewClient(
@@ -144,6 +145,19 @@ class MainActivity : AppCompatActivity() {
                 blobFinish = downloads::finish,
                 blobFailed = downloads::failed,
                 hideKeyboardCallback = { hideKeyboard() },
+                openSettingsCallback = {
+                    runOnUiThread {
+                        SettingsSheet(
+                            this,
+                            store,
+                            webView,
+                            ::onServerChanged,
+                            ::onImmersiveChanged,
+                            ::onCustomLayerChanged,
+                            ::onMathKeyboardChanged,
+                        ).show()
+                    }
+                },
             ),
             "DeeptutorBridge",
         )
@@ -188,21 +202,16 @@ class MainActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
             ),
         )
-        fab = FloatingSettingsButton(this, store) {
-            SettingsSheet(this, store, webView, ::onServerChanged, ::onImmersiveChanged, ::onCustomLayerChanged).show()
-        }
-        val fabSize = (40 * resources.displayMetrics.density).toInt()
-        root.addView(fab, FrameLayout.LayoutParams(fabSize, fabSize))
-        restoreFabPosition()
-
         mathTrigger = buildMathTrigger()
+        val triggerSize = dp(40)
         root.addView(
             mathTrigger,
-            FrameLayout.LayoutParams(fabSize, fabSize).apply {
+            FrameLayout.LayoutParams(triggerSize, triggerSize).apply {
                 gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
                 setMargins(0, 0, dp(16), dp(168))
             },
         )
+        mathTrigger.visibility = if (store.mathKeyboardEnabled) View.VISIBLE else View.GONE
 
         webView.setOnTouchListener { _, event ->
             if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN &&
@@ -252,7 +261,17 @@ class MainActivity : AppCompatActivity() {
                 errorView.visibility = View.GONE
                 webView.reload()
             },
-            onSettings = { SettingsSheet(this, store, webView, ::onServerChanged, ::onImmersiveChanged, ::onCustomLayerChanged).show() },
+            onSettings = {
+                SettingsSheet(
+                    this,
+                    store,
+                    webView,
+                    ::onServerChanged,
+                    ::onImmersiveChanged,
+                    ::onCustomLayerChanged,
+                    ::onMathKeyboardChanged,
+                ).show()
+            },
         )
     }
 
@@ -293,15 +312,11 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(url)
     }
 
-    private fun restoreFabPosition() {
-        fab.post {
-            val root = findViewById<FrameLayout>(R.id.root)
-            val margin = (16 * resources.displayMetrics.density).toInt()
-            val x = if (store.fabX == Int.MIN_VALUE) root.width - fab.width - margin else store.fabX
-            val y = if (store.fabY == Int.MIN_VALUE) root.height - fab.height - margin * 4 else store.fabY
-            fab.x = x.toFloat()
-            fab.y = y.toFloat()
-        }
+    /** 数学键盘开关：关闭后隐藏 Σ 入口并收起已打开的面板。 */
+    private fun onMathKeyboardChanged(enabled: Boolean) {
+        store.mathKeyboardEnabled = enabled
+        mathTrigger.visibility = if (enabled) View.VISIBLE else View.GONE
+        if (!enabled) hideMathKeyboard()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

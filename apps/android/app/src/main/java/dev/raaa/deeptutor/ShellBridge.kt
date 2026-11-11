@@ -15,6 +15,7 @@ class ShellBridge(
     private val blobFinish: (String) -> Unit,
     private val blobFailed: (String) -> Unit,
     private val hideKeyboardCallback: () -> Unit,
+    private val openSettingsCallback: () -> Unit,
 ) {
     @JavascriptInterface
     fun onThemeChanged(dark: Boolean) = themeCallback(dark)
@@ -37,4 +38,8 @@ class ShellBridge(
 
     @JavascriptInterface
     fun hideKeyboard() = hideKeyboardCallback()
+
+    /** 页面内注入的「APP设置」入口回调原生设置面板。 */
+    @JavascriptInterface
+    fun openSettings() = openSettingsCallback()
 }

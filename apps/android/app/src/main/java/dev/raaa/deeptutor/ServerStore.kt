@@ -15,10 +15,19 @@ class ServerStore(context: Context) {
             }.apply()
         }
 
-    /** 数学公式键盘入口：关闭后隐藏页面上的 Σ 悬浮按钮。 */
+    /** 数学公式键盘入口：关闭后隐藏页面上的浮动图标。 */
     var mathKeyboardEnabled: Boolean
         get() = prefs.getBoolean(KEY_MATH_KEYBOARD, true)
         set(value) = prefs.edit().putBoolean(KEY_MATH_KEYBOARD, value).apply()
+
+    /** 数学键盘浮动图标的停放位置；Int.MIN_VALUE 表示尚未拖动过。 */
+    var mathFabX: Int
+        get() = prefs.getInt(KEY_MATH_FAB_X, Int.MIN_VALUE)
+        set(value) = prefs.edit().putInt(KEY_MATH_FAB_X, value).apply()
+
+    var mathFabY: Int
+        get() = prefs.getInt(KEY_MATH_FAB_Y, Int.MIN_VALUE)
+        set(value) = prefs.edit().putInt(KEY_MATH_FAB_Y, value).apply()
 
     /** 沉浸模式：隐藏状态栏，从屏幕边缘下滑可临时调出。 */
     var immersive: Boolean
@@ -43,5 +52,7 @@ class ServerStore(context: Context) {
         const val KEY_IMMERSIVE = "immersive"
         const val KEY_CUSTOM_LAYER_URL = "custom_layer_url"
         const val KEY_MATH_KEYBOARD = "math_keyboard_enabled"
+        const val KEY_MATH_FAB_X = "math_fab_x"
+        const val KEY_MATH_FAB_Y = "math_fab_y"
     }
 }

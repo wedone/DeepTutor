@@ -35,8 +35,13 @@ class MainActivity : AppCompatActivity() {
             .build()
     }
     private lateinit var errorView: LoadErrorView
-    private lateinit var mathTrigger: android.widget.TextView
+    private lateinit var mathTrigger: View
     private var mathKeyboard: MathKeyboardView? = null
+    private var mathDragStartX = 0f
+    private var mathDragStartY = 0f
+    private var mathDragOriginX = 0f
+    private var mathDragOriginY = 0f
+    private var mathDragging = false
     private var atPageTop = true
     private var dockSuppressed = false
     private var lastBackAt = 0L
@@ -83,6 +88,7 @@ class MainActivity : AppCompatActivity() {
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             // edge-to-edge 下系统不会自动缩窗口，这里按 IME 实际高度压缩内容区
             syncContentInset()
+            syncMathTriggerPosition()
             insets
         }
 
@@ -204,15 +210,15 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         mathTrigger = buildMathTrigger()
-        val triggerSize = dp(40)
+        val triggerSize = dp(44)
         root.addView(
             mathTrigger,
             FrameLayout.LayoutParams(triggerSize, triggerSize).apply {
-                gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
-                setMargins(0, 0, dp(16), dp(224))
+                gravity = android.view.Gravity.TOP or android.view.Gravity.START
             },
         )
-        mathTrigger.visibility = if (store.mathKeyboardEnabled) View.VISIBLE else View.GONE
+        updateMathTriggerVisibility()
+        mathTrigger.post { restoreMathTriggerPosition() }
 
         webView.setOnTouchListener { _, event ->
             if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN &&
@@ -313,29 +319,138 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(url)
     }
 
-    /** 数学键盘开关：关闭后隐藏 Σ 入口并收起已打开的面板。 */
+    /** 数学键盘开关：关闭后隐藏入口并收起已打开的面板。 */
     private fun onMathKeyboardChanged(enabled: Boolean) {
         store.mathKeyboardEnabled = enabled
-        mathTrigger.visibility = if (enabled) View.VISIBLE else View.GONE
+        updateMathTriggerVisibility()
         if (!enabled) hideMathKeyboard()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private fun buildMathTrigger(): android.widget.TextView {
-        val tv = android.widget.TextView(this)
-        tv.text = "Σ"
-        tv.gravity = android.view.Gravity.CENTER
-        tv.setTextColor(Color.WHITE)
-        tv.textSize = 20f
-        tv.background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.OVAL
-            setColor(Color.parseColor("#4F8CFF"))
+    /** 数学键盘入口：半透明线性图标，无底色，可拖动停放。 */
+    private fun buildMathTrigger(): View {
+        val container = FrameLayout(this)
+        val icon = android.widget.ImageView(this)
+        val iconSize = dp(24)
+        icon.layoutParams = FrameLayout.LayoutParams(iconSize, iconSize, android.view.Gravity.CENTER)
+        icon.setImageResource(R.drawable.ic_math_keyboard)
+        icon.imageTintList = android.content.res.ColorStateList.valueOf(
+            androidx.core.content.ContextCompat.getColor(this, R.color.settings_text_primary),
+        )
+        container.addView(icon)
+        container.alpha = 0.55f
+        container.contentDescription = "数学公式键盘"
+        container.setOnTouchListener { view, event -> handleMathTriggerTouch(view, event) }
+        return container
+    }
+
+    /** 拖动与点击共用同一套触摸处理：位移小于 8dp 视为点击。 */
+    private fun handleMathTriggerTouch(view: View, event: android.view.MotionEvent): Boolean {
+        when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                mathDragStartX = event.rawX
+                mathDragStartY = event.rawY
+                mathDragOriginX = view.x
+                mathDragOriginY = view.y
+                mathDragging = false
+                return true
+            }
+
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - mathDragStartX
+                val dy = event.rawY - mathDragStartY
+                if (!mathDragging && Math.hypot(dx.toDouble(), dy.toDouble()) > dp(8)) {
+                    mathDragging = true
+                }
+                if (mathDragging) {
+                    val root = findViewById<FrameLayout>(R.id.root)
+                    val maxX = (root.width - view.width).coerceAtLeast(0).toFloat()
+                    val maxY = (root.height - view.height).coerceAtLeast(0).toFloat()
+                    view.x = (mathDragOriginX + dx).coerceIn(0f, maxX)
+                    view.y = (mathDragOriginY + dy).coerceIn(0f, maxY)
+                }
+                return true
+            }
+
+            android.view.MotionEvent.ACTION_UP -> {
+                if (mathDragging) {
+                    store.mathFabX = view.x.toInt()
+                    store.mathFabY = view.y.toInt()
+                    syncMathTriggerPosition()
+                } else {
+                    view.performClick()
+                    toggleMathKeyboard()
+                }
+                mathDragging = false
+                return true
+            }
+
+            android.view.MotionEvent.ACTION_CANCEL -> {
+                mathDragging = false
+                return true
+            }
         }
-        tv.alpha = 0.85f
-        tv.contentDescription = "数学公式"
-        tv.setOnClickListener { toggleMathKeyboard() }
-        return tv
+        return false
+    }
+
+    /** 恢复上次停放的位置；未拖动过时停在右下角、dock 上方。 */
+    private fun restoreMathTriggerPosition() {
+        val root = findViewById<FrameLayout>(R.id.root)
+        if (root.width == 0) return
+        val size = mathTrigger.width.takeIf { it > 0 } ?: dp(44)
+        val usableWidth = root.width - root.paddingLeft - root.paddingRight
+        val usableHeight = root.height - root.paddingTop - root.paddingBottom
+        val defaultX = root.paddingLeft + usableWidth - size - dp(16)
+        val defaultY = root.paddingTop + usableHeight - size - dp(224)
+        mathTrigger.x = if (store.mathFabX == Int.MIN_VALUE) defaultX.toFloat() else store.mathFabX.toFloat()
+        mathTrigger.y = if (store.mathFabY == Int.MIN_VALUE) defaultY.toFloat() else store.mathFabY.toFloat()
+        syncMathTriggerPosition()
+    }
+
+    /**
+     * 浮标逻辑：图标始终浮在系统键盘之上。
+     * 键盘未弹出时停在 A 点；弹出后若 A 点被盖住，就顶到键盘顶边之上。
+     */
+    private fun syncMathTriggerPosition() {
+        if (!::mathTrigger.isInitialized) return
+        // 拖动过程中不打断用户手势，松手时再按新位置计算
+        if (mathDragging) return
+        val root = findViewById<FrameLayout>(R.id.root)
+        if (root.width == 0) return
+        val size = mathTrigger.width.takeIf { it > 0 } ?: dp(44)
+        val usableWidth = root.width - root.paddingLeft - root.paddingRight
+        val usableHeight = root.height - root.paddingTop - root.paddingBottom
+        val baseX = if (store.mathFabX == Int.MIN_VALUE) {
+            root.paddingLeft + usableWidth - size - dp(16)
+        } else {
+            store.mathFabX
+        }
+        var baseY = if (store.mathFabY == Int.MIN_VALUE) {
+            root.paddingTop + usableHeight - size - dp(224)
+        } else {
+            store.mathFabY
+        }
+        if (isImeVisible() && imeBottomPx > 0) {
+            val keyboardTop = root.height - imeBottomPx
+            val limit = keyboardTop - size - dp(12)
+            if (baseY > limit) baseY = limit
+        }
+        mathTrigger.x = baseX.toFloat().coerceIn(
+            root.paddingLeft.toFloat(),
+            (root.paddingLeft + usableWidth - size).coerceAtLeast(root.paddingLeft).toFloat(),
+        )
+        mathTrigger.y = baseY.toFloat().coerceIn(
+            root.paddingTop.toFloat(),
+            (root.paddingTop + usableHeight - size).coerceAtLeast(root.paddingTop).toFloat(),
+        )
+    }
+
+    private fun updateMathTriggerVisibility() {
+        if (!::mathTrigger.isInitialized) return
+        val panelOpen = mathKeyboard?.visibility == View.VISIBLE
+        mathTrigger.visibility =
+            if (store.mathKeyboardEnabled && !panelOpen) View.VISIBLE else View.GONE
     }
 
     private fun toggleMathKeyboard() {
@@ -366,6 +481,7 @@ class MainActivity : AppCompatActivity() {
         // 像软键盘一样压缩页面区域，聊天输入框随之上移
         panelBottomPx = panel.layoutParams.height
         syncContentInset()
+        updateMathTriggerVisibility()
     }
 
     private fun hideMathKeyboard() {
@@ -374,6 +490,7 @@ class MainActivity : AppCompatActivity() {
         // 面板内的 WebView 可能持有输入法焦点，先主动收起，避免其残留占位
         hideKeyboard()
         syncContentInset()
+        updateMathTriggerVisibility()
         // 真机（Android 13）上 insets 派发可能晚于面板隐藏，补两次同步兜底
         refresh.postDelayed({ syncContentInset() }, 150)
         refresh.postDelayed({ syncContentInset() }, 450)

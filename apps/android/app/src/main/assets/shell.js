@@ -378,6 +378,100 @@
   }
 })();
 
+// 输入框补全提示：Web 端在空输入框上方显示「→ Tab 补全」，手机没有 Tab 键，
+// 这里让这行文字本身可点，点击后执行与 Tab 键相同的补全。
+(function () {
+  if (window.__dtTabCompleteInstalled) return;
+  window.__dtTabCompleteInstalled = true;
+
+  var timer = null;
+
+  function composerScope() {
+    var input = document.querySelector('textarea');
+    if (!input) return null;
+    // 补全提示与 textarea 在同一个 composer 卡片内
+    return input.closest('[class*="ChatComposer_surface"]') ||
+      (input.parentElement && input.parentElement.parentElement) ||
+      null;
+  }
+
+  function accept(span) {
+    var input = document.querySelector('textarea');
+    if (!input) return;
+    var before = input.value;
+    // 优先交给 Web 自己的 Tab 处理，保证补全后的状态与键盘操作一致
+    try {
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Tab',
+        code: 'Tab',
+        keyCode: 9,
+        which: 9,
+        bubbles: true,
+        cancelable: true,
+      }));
+    } catch (e) {}
+    if (input.value !== before) return;
+    // 合成按键被忽略时，直接用提示文本写入输入框
+    var suggestion = span.previousElementSibling;
+    var text = suggestion ? (suggestion.textContent || '').trim() : '';
+    if (!text) return;
+    try {
+      var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      input.setSelectionRange(text.length, text.length);
+    } catch (e2) {}
+  }
+
+  function mount() {
+    var scope = composerScope();
+    if (!scope) return;
+    var spans = scope.querySelectorAll('span');
+    for (var i = 0; i < spans.length; i++) {
+      var el = spans[i];
+      if (el.dataset.dtTabBound === '1') continue;
+      var text = (el.textContent || '').trim();
+      if (text.indexOf('→') !== 0 || text.indexOf('Tab') < 0) continue;
+      el.dataset.dtTabBound = '1';
+      el.style.pointerEvents = 'auto';
+      el.style.cursor = 'pointer';
+      // 负外边距抵消内边距，扩大触摸热区但不改变排版
+      el.style.padding = '2px 4px';
+      el.style.margin = '-2px -4px';
+      el.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        accept(this);
+      });
+    }
+  }
+
+  function schedule() {
+    if (timer) return;
+    timer = setTimeout(function () {
+      timer = null;
+      try {
+        mount();
+      } catch (e) {}
+    }, 300);
+  }
+
+  function start() {
+    schedule();
+    try {
+      new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    } catch (e) {}
+    setInterval(schedule, 1500);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
+
 // 底部导航 dock：Web 端在窄屏下只把侧边栏变成抽屉，一级入口仍藏在左上角。
 // 这里注入移动端常见的底部导航，隐藏页面顶部 44px 汉堡条，
 // 把抽屉入口收进「更多」；软键盘或原生数学键盘打开时自动隐藏。

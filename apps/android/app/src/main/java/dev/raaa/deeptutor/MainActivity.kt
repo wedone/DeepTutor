@@ -341,11 +341,24 @@ class MainActivity : AppCompatActivity() {
         panel.visibility = View.VISIBLE
         panel.setDark(isSystemDark())
         panel.bringToFront()
+        // 像软键盘一样压缩页面区域，聊天输入框随之上移
+        syncContentInset(panel.layoutParams.height)
     }
 
     private fun hideMathKeyboard() {
         mathKeyboard?.visibility = View.GONE
+        syncContentInset(0)
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+    }
+
+    /** 把主 WebView 的底部留出面板高度，等效于 adjustResize。 */
+    private fun syncContentInset(panelHeightPx: Int) {
+        if (!::refresh.isInitialized) return
+        val margin = if (panelHeightPx <= 0) 0 else panelHeightPx + dp(8)
+        val lp = refresh.layoutParams as FrameLayout.LayoutParams
+        if (lp.bottomMargin == margin) return
+        lp.bottomMargin = margin
+        refresh.layoutParams = lp
     }
 
     /** 键盘页面上报的 CSS 像素高度，换算为 dp 后约束在合理区间。 */
@@ -353,10 +366,11 @@ class MainActivity : AppCompatActivity() {
         val panel = mathKeyboard ?: return
         if (cssHeight < 200) return
         val density = resources.displayMetrics.density
-        val maxPx = (resources.displayMetrics.heightPixels * 0.62f).toInt()
+        val maxPx = (resources.displayMetrics.heightPixels * 0.58f).toInt()
         val target = (cssHeight * density).toInt().coerceIn(dp(240), maxPx)
         panel.layoutParams = panel.layoutParams.apply { height = target }
         panel.requestLayout()
+        syncContentInset(target)
     }
 
     /** 把数学键盘选中的公式写入聊天输入框。 */

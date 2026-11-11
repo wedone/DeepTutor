@@ -1,3 +1,89 @@
+// 老内核兼容垫片：Web 端打包产物用到了 Chrome 117+ 的新 API，
+// WebView 内核偏旧时会在渲染阶段抛出 TypeError，导致页面白屏并反复重载。
+// 这里在文档开始执行前补齐，避免整页不可用。
+(function () {
+  if (typeof Map.groupBy !== 'function') {
+    Map.groupBy = function (items, callback) {
+      var map = new Map();
+      var index = 0;
+      for (var item of items) {
+        var key = callback(item, index++);
+        var bucket = map.get(key);
+        if (bucket) bucket.push(item);
+        else map.set(key, [item]);
+      }
+      return map;
+    };
+  }
+  if (typeof Object.groupBy !== 'function') {
+    Object.groupBy = function (items, callback) {
+      var result = Object.create(null);
+      var index = 0;
+      for (var item of items) {
+        var key = callback(item, index++);
+        if (Object.prototype.hasOwnProperty.call(result, key)) result[key].push(item);
+        else result[key] = [item];
+      }
+      return result;
+    };
+  }
+  if (typeof Object.hasOwn !== 'function') {
+    Object.hasOwn = function (target, key) {
+      return Object.prototype.hasOwnProperty.call(target, key);
+    };
+  }
+  if (typeof Promise.withResolvers !== 'function') {
+    Promise.withResolvers = function () {
+      var resolve, reject;
+      var promise = new Promise(function (res, rej) {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise: promise, resolve: resolve, reject: reject };
+    };
+  }
+  if (typeof Array.prototype.findLast !== 'function') {
+    Array.prototype.findLast = function (fn, thisArg) {
+      for (var i = this.length - 1; i >= 0; i--) {
+        if (fn.call(thisArg, this[i], i, this)) return this[i];
+      }
+      return undefined;
+    };
+  }
+  if (typeof Array.prototype.findLastIndex !== 'function') {
+    Array.prototype.findLastIndex = function (fn, thisArg) {
+      for (var i = this.length - 1; i >= 0; i--) {
+        if (fn.call(thisArg, this[i], i, this)) return i;
+      }
+      return -1;
+    };
+  }
+  if (typeof Array.prototype.toSorted !== 'function') {
+    Array.prototype.toSorted = function (compareFn) {
+      return Array.prototype.slice.call(this).sort(compareFn);
+    };
+  }
+  if (typeof Array.prototype.toReversed !== 'function') {
+    Array.prototype.toReversed = function () {
+      return Array.prototype.slice.call(this).reverse();
+    };
+  }
+  if (typeof Array.prototype.toSpliced !== 'function') {
+    Array.prototype.toSpliced = function () {
+      var copy = Array.prototype.slice.call(this);
+      copy.splice.apply(copy, arguments);
+      return copy;
+    };
+  }
+  if (typeof Array.prototype.with !== 'function') {
+    Array.prototype.with = function (index, value) {
+      var copy = Array.prototype.slice.call(this);
+      copy[index < 0 ? copy.length + index : index] = value;
+      return copy;
+    };
+  }
+})();
+
 // DeepTutor Android 壳注入脚本：只做主题与滚动状态上报，不修改页面逻辑。
 (function () {
   if (window.__deeptutorShellInstalled) return;

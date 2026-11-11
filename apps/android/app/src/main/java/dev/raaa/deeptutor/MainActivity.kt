@@ -355,7 +355,12 @@ class MainActivity : AppCompatActivity() {
     private fun hideMathKeyboard() {
         mathKeyboard?.visibility = View.GONE
         panelBottomPx = 0
+        // 面板内的 WebView 可能持有输入法焦点，先主动收起，避免其残留占位
+        hideKeyboard()
         syncContentInset()
+        // 真机（Android 13）上 insets 派发可能晚于面板隐藏，补两次同步兜底
+        refresh.postDelayed({ syncContentInset() }, 150)
+        refresh.postDelayed({ syncContentInset() }, 450)
     }
 
     /**
@@ -364,17 +369,33 @@ class MainActivity : AppCompatActivity() {
      */
     private fun syncContentInset() {
         if (!::refresh.isInitialized) return
-        val imeExtra = (imeBottomPx - barsBottomPx).coerceAtLeast(0)
-        val margin = if (panelBottomPx > 0) panelBottomPx else imeExtra
+        val margin = if (panelBottomPx > 0) {
+            panelBottomPx
+        } else if (!isImeVisible()) {
+            // 输入法实际不可见时直接归零，避免缓存的旧 insets 让页面卡在压缩状态
+            0
+        } else {
+            (imeBottomPx - barsBottomPx).coerceAtLeast(0)
+        }
         val lp = refresh.layoutParams as FrameLayout.LayoutParams
         if (lp.bottomMargin == margin) return
         lp.bottomMargin = margin
         refresh.layoutParams = lp
+        // 部分机型（Android 13）WebView 不会随父容器尺寸变化自动重排，显式请求一次
+        refresh.requestLayout()
+        webView.requestLayout()
+    }
+
+    private fun isImeVisible(): Boolean {
+        val root = findViewById<FrameLayout>(R.id.root)
+        return ViewCompat.getRootWindowInsets(root)?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
     }
 
     /** 键盘页面上报的 CSS 像素高度，换算为 dp 后约束在合理区间。 */
     private fun applyMathPanelHeight(cssHeight: Int) {
         val panel = mathKeyboard ?: return
+        // 面板已隐藏时忽略延迟到达的高度回调，否则会把刚恢复的页面再次压缩
+        if (panel.visibility != View.VISIBLE) return
         if (cssHeight < 200) return
         val density = resources.displayMetrics.density
         val maxPx = (resources.displayMetrics.heightPixels * 0.58f).toInt()

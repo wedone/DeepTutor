@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 数学键盘浮标：圆角方块 + 细描边，按下时水波纹 -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/settings_ripple">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/settings_fab_surface" />
+            <stroke
+                android:width="1dp"
+                android:color="@color/settings_divider" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+</ripple>

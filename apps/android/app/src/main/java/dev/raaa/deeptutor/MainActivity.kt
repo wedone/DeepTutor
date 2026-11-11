@@ -328,7 +328,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    /** 数学键盘入口：半透明线性图标，无底色，可拖动停放。 */
+    /** 数学键盘入口：圆角方块 + 细描边，按下有水波纹，可拖动停放。 */
     private fun buildMathTrigger(): View {
         val container = FrameLayout(this)
         val icon = android.widget.ImageView(this)
@@ -339,7 +339,8 @@ class MainActivity : AppCompatActivity() {
             androidx.core.content.ContextCompat.getColor(this, R.color.settings_text_primary),
         )
         container.addView(icon)
-        container.alpha = 0.55f
+        container.background =
+            androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_math_fab)
         container.contentDescription = "数学公式键盘"
         container.setOnTouchListener { view, event -> handleMathTriggerTouch(view, event) }
         return container
@@ -354,6 +355,9 @@ class MainActivity : AppCompatActivity() {
                 mathDragOriginX = view.x
                 mathDragOriginY = view.y
                 mathDragging = false
+                // 手动驱动 pressed 状态，让波纹在自定义触摸处理下也能出现
+                view.isPressed = true
+                view.animate().scaleX(0.94f).scaleY(0.94f).setDuration(120).start()
                 return true
             }
 
@@ -362,6 +366,10 @@ class MainActivity : AppCompatActivity() {
                 val dy = event.rawY - mathDragStartY
                 if (!mathDragging && Math.hypot(dx.toDouble(), dy.toDouble()) > dp(8)) {
                     mathDragging = true
+                    // 拿起来了：取消按压态，整体放大并轻微抬起
+                    view.isPressed = false
+                    view.elevation = dp(6).toFloat()
+                    view.animate().scaleX(1.04f).scaleY(1.04f).setDuration(120).start()
                 }
                 if (mathDragging) {
                     val root = findViewById<FrameLayout>(R.id.root)
@@ -374,6 +382,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             android.view.MotionEvent.ACTION_UP -> {
+                view.isPressed = false
+                view.elevation = 0f
+                view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                 if (mathDragging) {
                     store.mathFabX = view.x.toInt()
                     store.mathFabY = view.y.toInt()
@@ -387,6 +398,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             android.view.MotionEvent.ACTION_CANCEL -> {
+                view.isPressed = false
+                view.elevation = 0f
+                view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                 mathDragging = false
                 return true
             }

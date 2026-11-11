@@ -11,4 +11,6 @@
     <color name="settings_ripple">#1F37352F</color>
     <color name="settings_switch_thumb">#FFFFFF</color>
     <color name="settings_switch_track_off">#D3D1CB</color>
+    <!-- 数学键盘浮标：页面底色的 85% 不透明填充 -->
+    <color name="settings_fab_surface">#D9FFFFFF</color>
 </resources>

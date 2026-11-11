@@ -51,6 +51,12 @@
     }
     /* 编辑器输入区域样式 */
     math-field {
+      /* ★ 覆盖 shadow DOM 内 :host{display:block}：
+       * MathLive 内部 .ML__container 是 inline-flex 且只有内容高度，
+       * host 为 block 时会贴顶排列，导致单行输入时上方窄、下方留白大。
+       * 改为 flex + align-items:center 后，内容在固定高度内垂直居中。 */
+      display: flex;
+      align-items: center;
       width: 100%;
       min-height: 60px;
       height: auto;

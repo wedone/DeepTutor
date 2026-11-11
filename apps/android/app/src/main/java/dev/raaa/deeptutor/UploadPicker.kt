@@ -7,6 +7,9 @@ import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import java.io.File
 
@@ -174,6 +177,21 @@ class UploadPicker(private val activity: AppCompatActivity) {
             if (!suppressCancel) cancel()
         }
         sheet.setContentView(view)
+        // 覆盖 BottomSheet 默认背景，改用与设置面板、Web 一致的圆角面板
+        sheet.setOnShowListener {
+            sheet.findViewById<android.view.View>(com.google.android.material.R.id.design_bottom_sheet)
+                ?.setBackgroundResource(R.drawable.bg_sheet)
+            // 沉浸模式下对话框自身的 window 也要隐藏状态栏，否则弹出时状态栏会重新出现
+            val window = sheet.window
+            if (window != null && ServerStore(activity).immersive) {
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                WindowInsetsControllerCompat(window, window.decorView).apply {
+                    hide(WindowInsetsCompat.Type.statusBars())
+                    systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            }
+        }
         sheet.show()
     }
 }

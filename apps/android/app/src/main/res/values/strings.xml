@@ -13,8 +13,8 @@
     <string name="back_to_exit">再按一次退出</string>
     <string name="upload_source_title">添加内容</string>
     <string name="upload_source_camera">拍照</string>
-    <string name="upload_source_gallery">从相册选择</string>
-    <string name="upload_source_file">选择文件</string>
+    <string name="upload_source_gallery">相册</string>
+    <string name="upload_source_file">文件</string>
     <string name="settings_title">设置</string>
     <string name="settings_subtitle">服务器地址与客户端偏好</string>
     <string name="settings_section_connection">连接</string>

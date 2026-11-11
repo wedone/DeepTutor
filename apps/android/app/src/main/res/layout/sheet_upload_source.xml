@@ -1,34 +1,117 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 附件来源选择：三宫格（上图标、下文字），配色与 Web 端一致 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:padding="16dp">
+    android:paddingStart="20dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="20dp"
+    android:paddingBottom="24dp">
+
+    <View
+        android:layout_width="36dp"
+        android:layout_height="4dp"
+        android:layout_gravity="center_horizontal"
+        android:background="@drawable/bg_drag_handle" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
         android:text="@string/upload_source_title"
-        android:textAppearance="?attr/textAppearanceTitleMedium" />
+        android:textColor="@color/settings_text_primary"
+        android:textSize="16sp"
+        android:textStyle="bold" />
 
-    <Button
-        android:id="@+id/sourceCamera"
-        style="@style/Widget.Material3.Button.TextButton"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/upload_source_camera" />
+        android:layout_marginTop="12dp"
+        android:baselineAligned="false"
+        android:orientation="horizontal">
 
-    <Button
-        android:id="@+id/sourceGallery"
-        style="@style/Widget.Material3.Button.TextButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/upload_source_gallery" />
+        <LinearLayout
+            android:id="@+id/sourceCamera"
+            android:layout_width="0dp"
+            android:layout_height="96dp"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_upload_item"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
 
-    <Button
-        android:id="@+id/sourceFile"
-        style="@style/Widget.Material3.Button.TextButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/upload_source_file" />
+            <ImageView
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:contentDescription="@string/upload_source_camera"
+                android:src="@drawable/ic_upload_camera"
+                android:tint="@color/settings_text_secondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/upload_source_camera"
+                android:textColor="@color/settings_text_primary"
+                android:textSize="12.5sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/sourceGallery"
+            android:layout_width="0dp"
+            android:layout_height="96dp"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_upload_item"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:contentDescription="@string/upload_source_gallery"
+                android:src="@drawable/ic_upload_gallery"
+                android:tint="@color/settings_text_secondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/upload_source_gallery"
+                android:textColor="@color/settings_text_primary"
+                android:textSize="12.5sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/sourceFile"
+            android:layout_width="0dp"
+            android:layout_height="96dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_upload_item"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:contentDescription="@string/upload_source_file"
+                android:src="@drawable/ic_upload_file"
+                android:tint="@color/settings_text_secondary" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/upload_source_file"
+                android:textColor="@color/settings_text_primary"
+                android:textSize="12.5sp" />
+        </LinearLayout>
+    </LinearLayout>
 </LinearLayout>

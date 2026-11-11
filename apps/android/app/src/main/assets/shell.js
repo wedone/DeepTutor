@@ -396,6 +396,7 @@
     { href: '/learning', label: '学习', icon: '<path d="M22 9.6 12 4.3 2 9.6l10 5.3 10-5.3z"/><path d="M6 12.3v4.6c0 1.8 2.7 3.2 6 3.2s6-1.4 6-3.2v-4.6"/>' },
     { href: '/space', label: '资源', icon: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.7"/>' },
     { href: '/partners', label: '伙伴', icon: '<circle cx="9" cy="8" r="3.2"/><path d="M2.9 20c0-3.1 2.7-5.1 6.1-5.1s6.1 2 6.1 5.1"/><path d="M16.3 5.2a3.2 3.2 0 0 1 0 6.2"/><path d="M17.5 15c2.1.6 3.6 2.1 3.6 4.3"/>' },
+    { href: '/personalization', label: '个性化', icon: '<circle cx="10" cy="8.25" r="3.5"/><path d="M3.75 19.75c.55-3.35 3.15-5.6 6.25-5.6 1.2 0 2.32.33 3.27.92"/><path d="M17.75 12.75c.3 1.65 1.35 2.7 3 3-1.65.3-2.7 1.35-3 3-.3-1.65-1.35-2.7-3-3 1.65-.3 2.7-1.35 3-3z"/>' },
   ];
   var MORE_ICON =
     '<circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/>' +

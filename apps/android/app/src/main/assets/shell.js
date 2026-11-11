@@ -129,5 +129,26 @@
       }
     }
   }, true);
+
+  // 原生数学键盘回调：把 LaTeX 插入聊天输入框光标处
+  window.__dtInsertMath = function (latex, mode) {
+    var el = document.querySelector('textarea');
+    if (!el) return false;
+    var value = el.value || '';
+    var start = typeof el.selectionStart === 'number' ? el.selectionStart : value.length;
+    var end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+    var snippet = mode === 'block'
+      ? '\n$$\n' + latex + '\n$$\n'
+      : ' $' + latex + '$ ';
+    var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(el, value.slice(0, start) + snippet + value.slice(end));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    var caret = start + snippet.length;
+    try {
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    } catch (e) {}
+    return true;
+  };
 })();
 

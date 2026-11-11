@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+  <!-- Absolute URLs: reliable in WebView + blob iframe; baseUrl in Dart matches this version -->
+  <link rel="stylesheet" href="mathlive-static.css" />
+  <script src="mathlive.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      background: #ffffff;
+      box-sizing: border-box;
+      /* ★ 阻止 MathLive adjustBoundingRect() 和 show() 设置 body.style.paddingBottom。
+       * 这两个方法会将 paddingBottom 设为键盘高度（如 302px），
+       * 与 box-sizing:border-box + height:100% 叠加后压缩内容区域。
+       * 当 Flutter 根据 mlMixedNotifyHostChromeHeight 的报告缩小 WebView 时，
+       * paddingBottom 可能还是旧值（时序竞态），导致内容区域变为负数，
+       * math-field 高度变为 0 而消失。
+       * WebView 高度已由 Flutter 通过 FlutterEditorHeight 完全控制，
+       * 不需要 MathLive 的 body padding 来为键盘留空间。 */
+      padding-bottom: 0 !important;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+    .mathlive-mixed-root {
+      margin: 0;
+      width: 100%;
+      flex-shrink: 0; /* ★ 防止 body padding 变化时被 flex 压缩 */
+      overscroll-behavior: none;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      background: #ffffff;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+    }
+    /* ───── 编辑器元素样式（非 DOM Hook，是 HTML 模板自带的 <math-field> 样式） ───── */
+    /* 隐藏 MathLive <math-field> 自带的菜单按钮和键盘切换按钮（我们用自己的 UI 控制） */
+    math-field::part(menu-toggle),
+    math-field::part(virtual-keyboard-toggle) {
+      display: none !important;
+    }
+    /* 编辑器输入区域样式 */
+    math-field {
+      width: 100%;
+      min-height: 60px;
+      height: auto;
+      flex-shrink: 0; /* ★ 确保即使 flex 容器被压缩，math-field 也不会缩小 */
+      font-size: 20px;
+      /* 测试阶段：上下边框显示容器边界 */
+      border-top: 1px solid #3b82f6;
+      border-bottom: 1px solid #3b82f6;
+      border-left: none;
+      border-right: none;
+      padding: 2px 8px;
+      box-sizing: border-box;
+      outline: none;
+      /* 公式内容水平居中 */
+      justify-content: center;
+    }
+    /* MathLive shadow DOM 内部内容区域居中 */
+    math-field::part(content) {
+      justify-content: center;
+    }
+    math-field:focus { outline: none; }
+
+    /* ───── 暗色主题样式（非 DOM Hook，通过 JS mlMixedSetTheme() 切换 .theme-dark 类） ───── */
+    .mathlive-mixed-root.theme-dark { background: #141922; }
+    body.theme-dark { background: #141922; }
+    .mathlive-mixed-root.theme-dark math-field,
+    body.theme-dark math-field {
+      background: #1e2532;
+      color: #e2e8f0;
+    }
+
+    /* ───── [DOM Hook 修改点 #8] 触屏设备按键尺寸适配 ───── */
+    /* 目标：通过 MathLive CSS 变量覆盖按键尺寸
+     * 作用：在触屏设备上使用更小的按键高度，为 fixedRows 滚动留出更多空间
+     * 原理：MathLive 内部使用 var(--keycap-height) 控制按键高度，
+     *   覆盖这些变量即可全局调整按键尺寸
+     * 触发条件：@media (pointer: coarse) 匹配触摸屏设备 */
+    @media (pointer: coarse) {
+      body {
+        --keycap-height: 42px;
+        --keycap-font-size: 17px;
+        --keycap-shift-font-size: 10px;
+        --keycap-small-font-size: 11px;
+        --keyboard-toolbar-font-size: 15px;
+        --keycap-gap: 4px;
+      }
+    }
+    /* ───── [DOM Hook 修改点 #1] 虚拟键盘外观 ───── */
+    /* 目标类：.ML__keyboard / .MLK__backdrop（MathLive 动态创建，位于 <body> 直接子级）
+     * 作用：去掉键盘顶部的阴影和边框，使其与编辑器无缝衔接
+     * 选择器说明：body > .ML__keyboard.is-visible > .MLK__backdrop
+     *   - .ML__keyboard  是 MathLive 创建的键盘根容器（position:fixed; bottom:0）
+     *   - .is-visible     是键盘显示后添加的状态类
+     *   - .MLK__backdrop  是键盘的背景层 */
+    body > .ML__keyboard.is-visible > .MLK__backdrop {
+      box-shadow: none;
+      border-top: none;
+    }
+
+    /* ───── [DOM Hook 修改点 #2] fixedRows 滚动区域的触摸行为 ───── */
+    /* 目标类：.MLK__scrollable-rows / .MLK__row / .MLK__row > div
+     * 作用：禁用浏览器原生滚动（touch-action:none），改由 JS 手动控制
+     * 原因：touch-action:pan-y 会让浏览器在 compositor 层抢走垂直手势，
+     *   导致 variant 面板的上划选择失效（两种手势都是垂直方向）
+     * 关联 JS：见下方 mlMixedFixScrollTouch() 函数
+     * DOM 结构（MathLive 渲染后）：
+     *   .MLK__scrollable-rows          ← 可滚动区域（overflow-y:auto + max-height）
+     *     └ .MLK__row                  ← 每行按键
+     *         └ div.MLK__keycap        ← 单个按键
+     *   .MLK__fixed-rows               ← 固定行区域（不滚动） */
+    .MLK__rows.MLK__scrollable-rows,
+    .MLK__rows.MLK__scrollable-rows .MLK__row,
+    .MLK__rows.MLK__scrollable-rows .MLK__row > div {
+      touch-action: none;
+    }
+    .MLK__rows.MLK__scrollable-rows {
+      overscroll-behavior: contain;
+    }
+
+    /* ───── [DOM Hook 修改点 #6] 右键菜单容器尺寸适配 ───── */
+    /* 目标类：.ML__menu / .ui-menu-container / [role="menu"]（MathLive 动态创建的弹出菜单）
+     * 作用：限制菜单最大宽高，使其在窄屏 WebView 中不溢出
+     * 原因：WebView 宽度通常等于手机屏幕宽度（约 360-400px），
+     *   MathLive 默认菜单宽度可能超出此范围，导致菜单被截断或触发横向滚动
+     * 使用 !important：需要覆盖 MathLive 内联样式 */
+    .ML__menu,
+    .ui-menu-container,
+    ui-menu-container,
+    ui-submenu,
+    [role="menu"] {
+      max-width: calc(100vw - 16px) !important;
+      max-height: calc(100vh - 16px) !important;
+      overflow: auto !important;
+      box-sizing: border-box !important;
+    }
+
+    /* ───── [DOM Hook 修改点 #7] 菜单项文本换行 ───── */
+    /* 目标类：[role="menuitem"]（菜单内的单个选项元素）
+     * 作用：允许菜单项文本自动换行，防止长文本（如中文标注）被截断
+     * 原因：MathLive 默认 white-space: nowrap，中文文本会溢出
+     * 关联类：.ui-menu-container / ui-menu-container 是不同版本菜单的容器类名 */
+    .ML__menu [role="menuitem"],
+    .ui-menu-container [role="menuitem"],
+    ui-menu-container [role="menuitem"],
+    [role="menu"] [role="menuitem"] {
+      white-space: normal !important;
+      word-break: break-word !important;
+    }
+  </style>
+</head>
+<body>
+<div class="mathlive-mixed-root" id="MATHLIVE_MIXED_ROOT_ID">
+  <math-field id="mf" math-mode-space="\ " virtual-keyboard-mode="manual"></math-field>
+</div>
+<script>
+  function mlMixedPostToHost(s) {
+    var str = String(s == null ? '' : s);
+    try {
+      if (typeof FlutterLatexSync !== 'undefined' && FlutterLatexSync.postMessage) {
+        FlutterLatexSync.postMessage(str);
+        return;
+      }
+    } catch (eSync) {}
+    try {
+      if (typeof FlutterLatex !== 'undefined' && FlutterLatex.postMessage) {
+        FlutterLatex.postMessage(str);
+        return;
+      }
+    } catch (e1) {}
+    try {
+      var latexPayload = { channel: 'MathLiveMixed', latex: str, clientId: '___MATHLIVE_MIXED_CLIENT___' };
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(latexPayload, '*');
+      } else {
+        window.postMessage(latexPayload, '*');
+      }
+    } catch (e2) {}
+  }
+
+  function mlMixedExportLatex() {
+    try {
+      var mf = document.getElementById('mf');
+      if (!mf) { mlMixedPostToHost(''); return; }
+      var s = (typeof mf.getValue === 'function') ? String(mf.getValue('latex') || '') : '';
+      mlMixedPostToHost(s);
+    } catch (e) {
+      mlMixedPostToHost('');
+    }
+  }
+
+  function mlMixedSetLatex(latex) {
+    var s = String(latex == null ? '' : latex);
+    function tryApply() {
+      try {
+        var mf = document.getElementById('mf');
+        if (!mf) return false;
+        if (typeof mf.setValue === 'function') {
+          mf.setValue(s, { format: 'latex' });
+        } else if ('value' in mf) {
+          mf.value = s;
+        } else {
+          return false;
+        }
+        try { mf.focus(); } catch (e2) {}
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    function scheduleRetries() {
+      tryApply();
+      setTimeout(tryApply, 0);
+      setTimeout(tryApply, 80);
+      setTimeout(tryApply, 250);
+      setTimeout(tryApply, 600);
+    }
+    scheduleRetries();
+    if (typeof customElements !== 'undefined' && customElements.whenDefined) {
+      customElements.whenDefined('math-field').then(scheduleRetries).catch(scheduleRetries);
+    }
+  }
+
+  function mlMixedSetTheme(dark) {
+    var root = document.getElementById('MATHLIVE_MIXED_ROOT_ID');
+    if (root) {
+      root.classList.toggle('theme-dark', !!dark);
+    } else {
+      document.body.classList.toggle('theme-dark', !!dark);
+    }
+  }
+
+  window.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (!d || d.channel !== 'MathLiveMixedHost') return;
+    if (d.clientId !== '___MATHLIVE_MIXED_CLIENT___') return;
+    if (d.cmd === 'export') { mlMixedExportLatex(); return; }
+    if (d.cmd === 'theme') { mlMixedSetTheme(!!d.dark); return; }
+    if (d.cmd === 'setLatex') { mlMixedSetLatex(d.latex); return; }
+  });
+
+  /* ★ 同步键盘高度并返回实际可视高度。
+   * 核心问题：切换布局层时 currentLayer setter 只切换 CSS class，不调用 adjustBoundingRect()。
+   *   - plate 内容变了（行数少了），plate.getBoundingClientRect().height 立即变为新值
+   *   - 但 --_keyboard-height 还是旧值（控制 .MLK__backdrop 的 height）
+   *   - 如果直接报告 plate 高度给 Flutter，Flutter 缩小 WebView 后键盘仍占旧高度 → 顶部被裁剪
+   * 解决方案：先调用 adjustBoundingRect() 同步 --_keyboard-height，再读取 backdrop 的实际高度。
+   *
+   * CSS 结构（virtual-keyboard.less）：
+   *   .ML__keyboard { --_keyboard-height: 0; }
+   *   .MLK__backdrop { height: var(--_keyboard-height); }
+   *   .ML__keyboard.is-visible > .MLK__backdrop { transform: translate(0, calc(-1 * var(--_keyboard-height))); }
+   */
+  function mlMixedSyncAndGetKeyboardHeight() {
+    try {
+      /* 1. 调用 adjustBoundingRect 同步 --_keyboard-height 与当前 plate 高度。
+       *    adjustBoundingRect 不是公开 API，但在非 iframe 环境下 mathVirtualKeyboard
+       *    是 VirtualKeyboard 实例，可直接访问。 */
+      if (typeof mathVirtualKeyboard !== 'undefined' && mathVirtualKeyboard.visible &&
+          typeof mathVirtualKeyboard.adjustBoundingRect === 'function') {
+        mathVirtualKeyboard.adjustBoundingRect();
+      }
+    } catch (eAdj) {}
+    /* 2. 不需要清除 body.style.paddingBottom：CSS padding-bottom: 0 !important 已覆盖内联样式。
+     *    adjustBoundingRect 会设置 body.style.paddingBottom = '199px' 等值，
+     *    但 !important 确保计算值为 0。不清除可避免不必要的 MutationObserver 触发
+     *    （设置相同值不会触发 mutation，但清除为 '' 会改变属性值从而触发）。 */
+    /* 3. 读取 .MLK__backdrop 的 offsetHeight（= --_keyboard-height 的实际渲染值）。
+       *    这是键盘的真正可视高度，而不是 plate 内容高度。
+       *    plate 高度在布局切换后立即变化，但 --_keyboard-height 可能还是旧值。
+       *    调用 adjustBoundingRect 后两者同步，读取 backdrop 得到正确高度。 */
+    try {
+      var backdrop = document.querySelector('.ML__keyboard.is-visible > .MLK__backdrop');
+      if (backdrop) {
+        var h = backdrop.offsetHeight || 0;
+        if (h > 0) return h;
+      }
+    } catch (eBd) {}
+    /* 4. 回退：使用 boundingRect.height（plate 高度） */
+    try {
+      if (typeof mathVirtualKeyboard !== 'undefined' && mathVirtualKeyboard.visible) {
+        return mathVirtualKeyboard.boundingRect.height || 0;
+      }
+    } catch (evk) {}
+    return 0;
+  }
+
+  function mlMixedNotifyHostChromeHeight() {
+    try {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          try {
+            var mf = document.getElementById('mf');
+            /* ★ 确保 mfH 至少为 60（math-field 的 min-height），
+             * 防止在某些时序下 offsetHeight 返回 0 导致报告高度仅为键盘高度 */
+            var mfH = mf ? Math.max(mf.offsetHeight, 60) : 50;
+            /* ★ 先同步 --_keyboard-height，再读取键盘实际可视高度（backdrop offsetHeight）。
+             * 避免布局切换后 plate 高度已变但 --_keyboard-height 未更新的时序竞态。 */
+            var kh = mlMixedSyncAndGetKeyboardHeight();
+            var h = Math.ceil(mfH + kh);
+            if (h < 80) h = 80;
+            /* ★ 如果键盘可见但高度为 0，说明键盘正在重建/重渲染中，
+             * 延迟重试以确保最终报告正确的高度 */
+            if (kh === 0 && typeof mathVirtualKeyboard !== 'undefined' && mathVirtualKeyboard.visible) {
+              setTimeout(mlMixedNotifyHostChromeHeight, 200);
+              setTimeout(mlMixedNotifyHostChromeHeight, 500);
+            }
+            /* Report height via Android JS bridge */
+            try {
+              if (typeof DeepTutorMath !== 'undefined' && DeepTutorMath.onHeight) {
+                DeepTutorMath.onHeight(h);
+              }
+            } catch (ech) {}
+          } catch (e) {}
+        });
+      });
+    } catch (e2) {}
+  }
+
+  /* ───── [DOM Hook 修改点 #3] 自定义键盘布局配置 ─────
+   *
+   * 调用 MathLive 公开 API：mathVirtualKeyboard.layouts = [...]
+   * 这是 MathLive 的官方 API，不属于 DOM Hook，但它是 fixedRows 功能的前提。
+   *
+   * fixedRows 是本地构建的 MathLive JS 源码级扩展（CDN 0.101.2 不支持）。
+   * 渲染后 MathLive 会生成以下 DOM 结构：
+   *
+   *   <div class="ML__keyboard is-visible">           ← 键盘根容器
+   *     <div class="MLK__backdrop">
+   *       <div class="MLK__plate">
+   *         <div class="MLK__layer has-fixed-rows">   ← 有 fixedRows 时添加 has-fixed-rows 类
+   *           <div class="MLK__rows MLK__scrollable-rows">  ← 可滚动区域
+   *             <div class="MLK__row">...</div>     ← rows[0]
+   *             <div class="MLK__row">...</div>     ← rows[1]
+   *             ...                                  ← rows[N]
+   *           </div>
+   *           <div class="MLK__rows MLK__fixed-rows">      ← 固定区域
+   *             <div class="MLK__row">...</div>     ← fixedRows[0]
+   *           </div>
+   *         </div>
+   *       </div>
+   *     </div>
+   *   </div>
+   *
+   * 注意：LaTeX 命令中的反斜杠在 JS 字符串中需要双写（'\\frac' 而非 '\frac'）
+   */
+  function mlMixedSetupKeyboardLayouts() {
+    if (typeof mathVirtualKeyboard === 'undefined') return;
+    try {
+      mathVirtualKeyboard.layouts = [
+        {
+          label: '常用',
+          layers: [
+          {
+            rows: [
+              // 第一行
+              [
+                {
+                  label: '0',
+                  variants: [
+                    '∞',
+                    { latex: '\\propto'},
+                    { latex: '×10}^{#0}', class: 'small' },
+                  ],
+                  shift: '\\infty'
+                },
+                { label: '[1]', variants: ['\\frac{1}{#@}', '{#@}^{-1}', '{#@}_1'] },
+                { label: '[2]', variants: ['\\frac{1}{2}', '{#@}_2', '{#@}^2', '\\sqrt{2}'] },
+                '[3]',
+                '[4]',
+                { class: 'separator', width: 0.5 },
+                { label: "A", variants: ["a", "α"], shift: "α" },
+                { label: "B", variants: ["b", "β"], shift: "β" },
+                { label: "C", variants: ["c", "θ"], shift: "θ" },
+                { label: "D", variants: ["d", "λ"], shift: "λ" },
+                { label: "E", variants: ["e", "μ"], shift: "μ" }
+              ],
+              // { class: 'small', latex: '\\frac{#@}{#?}' }, '\\varnothing', '\\infty', '\\in', '\\notin'],
+              // 第二行
+              [
+                '[5]',
+                '[6]',
+                '[7]',
+                '[8]',
+                '[9]',
+                { class: 'separator', width: 0.5 },
+                { label: "F", variants: ["f", "σ"], shift: "σ" },
+                { label: "G", variants: ["g", "π"], shift: "π" },
+                { label: "H", variants: ["h", "ω"], shift: "ω" },
+                { label: "I", variants: ["i", "γ"], shift: "γ" },
+                { label: "J", variants: ["j", "δ"], shift: "δ" }
+                // '(#@)', '[)]', '\\lt', '\\le', '\\hat{=}'
+              ],
+              // 第三行
+              [
+                '[.]',
+                '[(]',
+                '[)]',
+                { label: "<", latex: '\\lt', variants: ["\\le", '≪'] },
+                { label: ">", latex: '\\gt', variants: ["\\ge", '≫'] },
+                { class: 'separator', width: 0.5 },
+                { label: "K", variants: ["k", "Δ", '\\nabla'], shift: "Δ" },
+                { label: "L", variants: ["l", "ρ",], shift: "ρ" },
+                { label: "M", variants: ["m", "\\min", "\\max", "ϕ",], shift: "ϕ" },
+                { label: "N", variants: ["n", "Σ"], shift: "Σ" },
+                { label: "O", variants: ["o", "ε"], shift: "ε" }
+                // '[', ']', '\\gt', '\\ne', '\\ge'
+              ],
+              // 第四行
+              [
+                { latex: '{#@}^{\\prime}', variants: ['{#@}^{\\doubleprime}', '{#@}°'] },
+                { class: 'small', latex: '\\frac{#@}{#?}', variants: [{ latex: "\\frac{#?}{#@}", class: 'small' }] },
+                { latex: '{#@}^{2}}', variants: ['{#@}^{\\placeholder{@0}}', '{#@}_{\\placeholder{@0}}', '{#@}_{\\placeholder{@?}}^{\\placeholder{@?}}'] },
+                { latex: '\\sqrt{#0}', variants: ['\\sqrt{#@}'] },
+                { latex: '\\overrightarrow{#0}', variants: ['\\vec{#0}'] },
+                { class: 'separator', width: 0.5 },
+                { label: "P", variants: ["p", "η"], shift: "η" },
+                { label: "Q", variants: ["q", "ξ"], shift: "ξ" },
+                { label: "R", variants: ["r", "τ", '\\mathbb{R}'], shift: "τ" },
+                { latex: "S", variants: ["s", "S_{\\placeholder{@0}}", "Ω"], shift: "Ω" },
+                { label: "T", variants: ["t"], shift: "" },
+              ],
+              // 第五行
+              [
+
+                { latex: '|{#0}|', variants: ['||{#0}||'] },
+                { label: '⊥', variants: ['∥',{latex:'\\not\\perp'}], shift: '∥' },
+                { label: '∠', variants: ['∡', '∢'] },
+                { label: "△",  variants: [{ label: '▱', insert: '\\text{平行四边形}' }, { label: '□', insert: '\\text{正方形}' }, { label: '圆', insert: '\\text{圆}' }, { label: '⊙', insert: '\\text{圆点}' }] },
+                { latex: '\\because', insert: '\\text{因为}', variants: [{ latex: '\\therefore', insert: '\\text{所以}' }] },
+                { class: 'separator', width: 0.5 },
+                { label: "U", variants: ["u"], shift: "" },
+                { label: "V", variants: ["v"], shift: "" },
+                { latex: "x", variants: ["X"], shift: "" },
+                { latex: "y", variants: ["Y"], shift: "" },
+                { latex: "z", variants: ["Z"], shift: "" }
+              ],
+              // 第六行
+              [
+                { latex: '∈', variants: ['⊆', '⊂', '\\notin'], shift: '⊆' },
+                { latex: '∋', variants: ['⊇', '⊃'], shift: '⊇' },
+                { latex: '∪', variants: ['∩', '∅'], shift: '∩' },
+                { latex: '⇒', variants: ['→', '⟺'], shift: '→' },
+                { latex: '⇐', variants: ['←', '⇔'], shift: '←' },
+                { class: 'separator', width: 0.5 },
+                { latex: "\\sin", variants: [{ latex: '\\sin^{-1}', class: 'small' }, '\\arcsin'], shift: '\\sin^{-1}' },
+                { latex: "\\cos", variants: [{ latex: '\\cos^{-1}', class: 'small' }, '\\arccos'], shift: '\\cos^{-1}' },
+                { latex: "\\tan", variants: [{ latex: '\\tan^{-1}', class: 'small' }, '\\arctan'], shift: '\\tan^{-1}' },
+                { latex: '\\max', variants: ['\\min', "\\lim"], shift: '\\min' },
+                { latex: "\\log", variants: ['\\ln', '\\lg'], shift: '\\ln' },
+              ],
+            ],
+            fixedRows: [
+              ['[+]', '[-]', '[*]', '[/]',
+                { label: '=', variants: ['≠', '∼', '≈', '≅', '≡'], shift: '≈' },
+                // { class: 'separator', width: 0.5 },
+                { label: '[shift]', width: 1 },
+                { label: '[right]', width: 1.5 },
+                { label: '[backspace]', width: 1 },
+                // { class: 'action', label: '[backspace]', "command": 'backspace', variants: '[deleteAll]', width: 1 },
+                { label: '[left]', width: 1 },
+                // ★ [插入]按键：替换原 [return]，默认行内（$...$），Shift 行间（$$...$$）
+                {
+                  label: '[return]',
+                  class: 'action',
+                  width: 1,
+                  command: 'insertInline',
+                  shift: {
+                    label: '↩️',
+                    class: 'action',
+                    command: 'insertBlock',
+                  },
+                }],
+            ],
+          },
+        ],
+      },
+      'numeric',
+      'symbols',
+      // 'alphabetic',
+      'greek'
+      ];
+    } catch (e) {}
+  }
+
+  /* ───── [DOM Hook 修改点 #5b] 独立高度监控 ─────
+   *
+   * 问题背景：
+   *   MathLive 的 geometrychange 事件由 ResizeObserver 触发，该 Observer 在 show()
+   *   时开始观察 .MLK__plate。但 rebuild() 会移除旧 plate 并创建新 plate，却不重新
+   *   observe 新 plate，导致后续布局切换时 geometrychange 不触发。
+   *   结果：Flutter 不知道键盘高度已变化，WebView 高度停留在旧值。
+   *
+   * 解决方案：双保险监控
+   *   1. MutationObserver：监听 body 子树变化，检测键盘 DOM 重建/层切换
+   *   2. 定期轮询：每 300ms 检查一次 boundingRect.height，与上次比较，变化则报告
+   *   3. 同时持续清除 body.style.paddingBottom（adjustBoundingRect 可能在任何
+   *      时机被调用并重新设置它）
+   */
+  var mlMixedLastReportedKh = -1;
+  var mlMixedHeightPollTimer = null;
+  var mlMixedMutationPending = false; /* ★ 防止 MutationObserver 与 adjustBoundingRect 形成无限循环 */
+  function mlMixedStartHeightMonitor() {
+    if (mlMixedHeightPollTimer) return; /* 已启动 */
+    /* 1. MutationObserver：监听键盘 DOM 变化。
+     *    注意：adjustBoundingRect() 会修改 --_keyboard-height 和 body.paddingBottom，
+     *    这会反过来触发 MutationObserver。使用 mlMixedMutationPending 标志防止无限循环。 */
+    try {
+      var observer = new MutationObserver(function (mutations) {
+        if (mlMixedMutationPending) return;
+        var changed = false;
+        for (var i = 0; i < mutations.length; i++) {
+          if (mutations[i].type === 'childList' || mutations[i].type === 'attributes') {
+            changed = true;
+            break;
+          }
+        }
+        if (changed) {
+          mlMixedMutationPending = true;
+          /* DOM 变化后延迟报告，等待浏览器完成布局 */
+          setTimeout(function () {
+            mlMixedMutationPending = false;
+            mlMixedNotifyHostChromeHeight();
+          }, 50);
+          setTimeout(function () {
+            mlMixedMutationPending = false;
+            mlMixedNotifyHostChromeHeight();
+          }, 200);
+        }
+      });
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+      });
+    } catch (eObs) {}
+
+    /* 2. 定期轮询：每 300ms 检查键盘高度变化。
+     *    使用 mlMixedSyncAndGetKeyboardHeight() 读取键盘实际可视高度（backdrop），
+     *    而非 boundingRect.height（plate 高度），避免时序竞态。 */
+    mlMixedHeightPollTimer = setInterval(function () {
+      try {
+        if (typeof mathVirtualKeyboard === 'undefined' || !mathVirtualKeyboard.visible) {
+          if (mlMixedLastReportedKh !== 0) {
+            mlMixedLastReportedKh = 0;
+            mlMixedNotifyHostChromeHeight();
+          }
+          return;
+        }
+        var kh = mlMixedSyncAndGetKeyboardHeight();
+        if (kh !== mlMixedLastReportedKh) {
+          mlMixedLastReportedKh = kh;
+          mlMixedNotifyHostChromeHeight();
+        }
+      } catch (e) {}
+    }, 300);
+  }
+
+  /* ───── [DOM Hook 修改点 #5] 键盘生命周期钩子 ─────
+   *
+   * 通过 MathLive 公开 API 监听键盘的 geometrychange 事件。
+   * MathLive 每次重建键盘 DOM（如切换布局）后会触发此事件。
+   *
+   * 为什么需要在这里调用 mlMixedFixScrollTouch()？
+   *   MathLive 的 rebuild() 会移除旧 DOM 并创建新 DOM，
+   *   之前绑定的 scrollable 事件监听器随旧 DOM 一起销毁，
+   *   必须在 geometrychange 回调中重新绑定。
+   */
+  function mlMixedAttachVirtualKeyboard() {
+    if (typeof mathVirtualKeyboard === 'undefined') return;
+    /*
+     * Do NOT set container — let the keyboard render at body level.
+     * MathLive creates <div class="ML__keyboard"> as a direct child of <body>
+     * with position:fixed; bottom:0.
+     */
+    mlMixedSetupKeyboardLayouts();
+    mlMixedSetupCustomCommands();
+    try {
+      mathVirtualKeyboard.show();
+    } catch (eShow) {}
+    /* show() 会设置 body.style.paddingBottom，但 CSS padding-bottom: 0 !important 已覆盖，
+     * 不需要手动清除（清除反而会触发 MutationObserver）。 */
+    mlMixedEnsureScrollFix();
+    try {
+      mathVirtualKeyboard.addEventListener('geometrychange', function () {
+        /* adjustBoundingRect 在 geometrychange 之前被调用，已设置 body paddingBottom。
+         * CSS padding-bottom: 0 !important 已覆盖，不需要手动清除。 */
+        mlMixedNotifyHostChromeHeight();
+        mlMixedFixScrollTouch();
+      });
+    } catch (e1) {}
+    /* Report height when math-field content changes (may grow/shrink) */
+    try {
+      var mf = document.getElementById('mf');
+      if (mf) {
+        mf.addEventListener('input', function () {
+          setTimeout(mlMixedNotifyHostChromeHeight, 50);
+        });
+      }
+    } catch (eInput) {}
+    /* ★ 启动独立的高度监控：MutationObserver + 定期轮询。
+     * MathLive 的 geometrychange 可能在某些时序下不触发（如 rebuild 后 ResizeObserver
+     * 未重新观察新 plate），导致布局切换后高度未报告给 Flutter。 */
+    mlMixedStartHeightMonitor();
+    mlMixedNotifyHostChromeHeight();
+  }
+
+  /* ───── [DOM Hook 修改点 #4] 触摸滚动事件拦截器 ─────
+   *
+   * 目标类：.MLK__scrollable-rows（MathLive 渲染 fixedRows 布局后自动生成）
+   * 冲突类：.MLK__variant-panel.is-visible（variant 面板弹出时添加）
+   * 状态类：.is-pressed（按键被按下时由 MathLive 的 Gg() 函数添加）
+   *
+   * 核心矛盾：
+   *   - MathLive 在 .ML__keyboard 上注册了 Gg(pointerdown) 处理器，
+   *     会调用 e.preventDefault() 阻止浏览器启动滚动手势
+   *   - MathLive 在每个 .MLK__layer 上也注册了 pointerdown→preventDefault()
+   *   - 上述两处共同导致手指滑动无法触发原生滚动
+   *
+   * 解决方案（capture 阶段拦截 + JS 手动滚动）：
+   *   1. pointerdown：记录起始坐标和 scrollTop（capture 阶段，先于 MathLive）
+   *   2. pointermove：移动超过 10px 阈值 → 判定为滚动
+   *      → 移除 .is-pressed 类（使 MathLive 的 pointerup 处理器不触发命令）
+   *      → e.stopPropagation() 阻止 MathLive 的处理器执行
+   *      → 手动修改 scrollTop（带 2x 增益，改善滚动手感）
+   *   3. variant 面板打开时不干预 → 让 MathLive 正常处理上划选择
+   *   4. pointerup：若正在滚动 → stopPropagation 阻止 MathLive 触发按键命令
+   *
+   * 为什么不派发 pointercancel？
+   *   WebView 实现可能将合成的 pointercancel 视为真实取消信号，
+   *   导致浏览器内部终止该 pointer 会话，后续 pointermove 不再派发
+   */
+  function mlMixedFixScrollTouch() {
+    var scrollable = document.querySelector('.MLK__scrollable-rows');
+    if (!scrollable || scrollable.dataset.mlMixedScrollFix === '1') return;
+    scrollable.dataset.mlMixedScrollFix = '1';
+
+    var startX = 0, startY = 0, startScrollTop = 0;
+    var activePtr = -1;
+    var isScrolling = false;
+    var THRESHOLD = 10;
+    /* 滚动增益：手指移动 1px → 滚动 2px，减少滑动次数 */
+    var SCROLL_GAIN = 2;
+
+    scrollable.addEventListener('pointerdown', function (e) {
+      startX = e.clientX;
+      startY = e.clientY;
+      startScrollTop = scrollable.scrollTop;
+      activePtr = e.pointerId;
+      isScrolling = false;
+    }, { capture: true });
+
+    scrollable.addEventListener('pointermove', function (e) {
+      if (e.pointerId !== activePtr) return;
+
+      /* variant 面板打开时，完全不干预，让 MathLive 处理上划选择 */
+      if (document.querySelector('.MLK__variant-panel.is-visible')) return;
+
+      var dy = e.clientY - startY;
+
+      if (!isScrolling) {
+        var dx = Math.abs(e.clientX - startX);
+        if (Math.abs(dy) < THRESHOLD && dx < THRESHOLD) return;
+
+        /* 超过阈值 → 判定为滚动 */
+        isScrolling = true;
+
+        /* 移除按键按压状态（不派发 pointercancel，避免 WebView 停止 pointermove） */
+        var pressed = scrollable.querySelector('.is-pressed');
+        if (pressed) pressed.classList.remove('is-pressed');
+      }
+
+      /* 阻止事件传播到 MathLive 的处理器 */
+      e.preventDefault();
+      e.stopPropagation();
+
+      /* 手动滚动（带增益） */
+      scrollable.scrollTop = startScrollTop - dy * SCROLL_GAIN;
+    }, { capture: true });
+
+    /* pointerup 时若正在滚动，阻止事件到达 MathLive 的按键处理器 */
+    scrollable.addEventListener('pointerup', function (e) {
+      if (e.pointerId !== activePtr) return;
+      if (isScrolling) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      activePtr = -1;
+      isScrolling = false;
+    }, { capture: true });
+
+    scrollable.addEventListener('pointercancel', function (e) {
+      if (e.pointerId === activePtr) {
+        activePtr = -1;
+        isScrolling = false;
+      }
+    }, { capture: true });
+  }
+
+  function mlMixedEnsureScrollFix() {
+    requestAnimationFrame(mlMixedFixScrollTouch);
+    setTimeout(mlMixedFixScrollTouch, 100);
+    setTimeout(mlMixedFixScrollTouch, 500);
+  }
+
+  /* ───── 自定义 command：行内/行间插入公式 ─────
+   *
+   * 按键 command 分发链路（MathLive 0.101.2 源码追踪）：
+   *   1. 用户按下 [return] 按键 → handleVirtualKeyboardEvent() (pointerup)
+   *   2. executeKeycapCommand(keycap) → 取 keycap.command
+   *   3. VirtualKeyboard.singleton.executeCommand(command)  ← 即 mathVirtualKeyboard.executeCommand
+   *   4. getCommandTarget(command) 查 COMMANDS 注册表 → 未注册返回 undefined
+   *   5. sendMessage('execute-command', {command}) → mathfield.perform() → 抛 "Unknown command"
+   *
+   * 关键：必须覆写 mathVirtualKeyboard.executeCommand（步骤 3），而非 mf.executeCommand（步骤 5 之后）。
+   * 因为 mf.executeCommand 是 MathfieldElement 的公开方法，键盘不经过它；
+   * 键盘直接调用 mathVirtualKeyboard.executeCommand，该方法内部通过 sendMessage
+   * 发消息给私有 mathfield，私有 mathfield 再调 perform() 抛错。
+   *
+   * command 命名：
+   *   'insertInline' → 行内公式，Flutter 侧以 $...$ 包裹
+   *   'insertBlock'  → 行间公式，Flutter 侧以 $$...$$ 包裹
+   */
+  function mlMixedHandleInsertCommand(cmdName) {
+    try {
+      var mf = document.getElementById('mf');
+      if (!mf) return;
+      var latex = (typeof mf.getValue === 'function') ? String(mf.getValue('latex') || '') : '';
+      if (latex.trim() === '') return;
+
+      /* 将命令名转换为 mode 值：insertInline → 'inline'，insertBlock → 'block' */
+      var mode = cmdName === 'insertBlock' ? 'block' : 'inline';
+
+      /* 发送插入请求到 Android 宿主 */
+      var payload = JSON.stringify({ mode: mode, latex: latex });
+      try {
+        if (typeof DeepTutorMath !== 'undefined' && DeepTutorMath.onInsert) {
+          DeepTutorMath.onInsert(payload);
+        }
+      } catch (eInsert) {}
+
+      /* 清空 math-field，准备输入下一个公式 */
+      try {
+        mf.setValue('', { format: 'latex' });
+      } catch (eClear) {}
+    } catch (e) {}
+  }
+
+  function mlMixedSetupCustomCommands() {
+    if (typeof mathVirtualKeyboard === 'undefined') return;
+    if (mathVirtualKeyboard._mlMixedCustomCmd === '1') return;
+    mathVirtualKeyboard._mlMixedCustomCmd = '1';
+
+    /* 保存原始 executeCommand 引用（VirtualKeyboard 实例方法） */
+    var originalVkExecute = mathVirtualKeyboard.executeCommand.bind(mathVirtualKeyboard);
+
+    /* 覆写 mathVirtualKeyboard.executeCommand，在 sendMessage 之前拦截自定义命令 */
+    mathVirtualKeyboard.executeCommand = function (command) {
+      var cmd = (Array.isArray(command) && command.length > 0) ? command[0] : command;
+      if (cmd === 'insertInline' || cmd === 'insertBlock') {
+        mlMixedHandleInsertCommand(cmd);
+        return true;
+      }
+      return originalVkExecute.apply(this, arguments);
+    };
+  }
+
+  function mlMixedEnsureMathModeSpace() {
+    var mf = document.getElementById('mf');
+    if (!mf) return;
+    try {
+      mf.setAttribute('math-mode-space', '\\ ');
+    } catch (e) {}
+  }
+
+  var mlMixedSpaceInsertLockUntil = 0;
+  function mlMixedInsertLatexSpace(mf) {
+    var now = typeof performance !== 'undefined' && performance.now
+      ? performance.now()
+      : Date.now();
+    if (now < mlMixedSpaceInsertLockUntil) {
+      return;
+    }
+    mlMixedSpaceInsertLockUntil = now + 120;
+    try {
+      if (typeof mf.executeCommand === 'function') {
+        try {
+          mf.executeCommand(['insert', '\\ ', { format: 'latex' }]);
+        } catch (e1) {
+          try {
+            mf.executeCommand(['insert', '\\ ']);
+          } catch (e2) {
+            mf.executeCommand('insert', '\\ ');
+          }
+        }
+      } else if (typeof mf.insert === 'function') {
+        mf.insert('\\ ', { format: 'latex' });
+      }
+    } catch (e3) {}
+  }
+
+  function mlMixedEventTargetsMathField(ev, mf) {
+    if (!mf) return false;
+    if (ev.target === mf || mf.contains(ev.target)) return true;
+    if (mf.shadowRoot && ev.target && mf.shadowRoot.contains(ev.target)) return true;
+    if (typeof ev.composedPath === 'function') {
+      var path = ev.composedPath();
+      for (var i = 0; i < path.length; i++) {
+        if (path[i] === mf) return true;
+      }
+    }
+    return false;
+  }
+
+  function mlMixedFixKeys() {
+    var mf = document.getElementById('mf');
+    if (!mf || mf.dataset.mlMixedKeyFix === '1') return;
+
+    mf.dataset.mlMixedKeyFix = '1';
+
+    mlMixedEnsureMathModeSpace();
+
+    mf.addEventListener(
+      'keydown',
+      function (ev) {
+        if (!mlMixedEventTargetsMathField(ev, mf)) return;
+        if (ev.key !== 'Enter') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        try {
+          mf.executeCommand('addRowAfter');
+        } catch (e1) {
+          try {
+            mf.insert('\\newline ', { format: 'latex' });
+          } catch (e2) {}
+        }
+      },
+      true
+    );
+
+    mf.addEventListener(
+      'keydown',
+      function (ev) {
+        if (!mlMixedEventTargetsMathField(ev, mf)) return;
+        if (ev.key !== ' ' && ev.code !== 'Space') return;
+        try {
+          ev.preventDefault();
+        } catch (e0) {}
+        try {
+          ev.stopImmediatePropagation();
+        } catch (e1) {}
+        ev.stopPropagation();
+        mlMixedInsertLatexSpace(mf);
+      },
+      true
+    );
+
+    mf.addEventListener(
+      'beforeinput',
+      function (ev) {
+        if (ev.inputType !== 'insertText' || ev.data !== ' ') return;
+        if (!mlMixedEventTargetsMathField(ev, mf)) return;
+        try {
+          ev.preventDefault();
+        } catch (e2) {}
+        ev.stopPropagation();
+        mlMixedInsertLatexSpace(mf);
+      },
+      true
+    );
+  }
+
+  /* ───── 修复按键声效 ─────
+   * MathLive 默认 soundsDirectory 为 './sounds'（相对路径），通过 resolveUrl() 解析。
+   * 但本项目的 JS 被内联到 HTML 中（非 <script src> 加载），
+   * 导致 document.currentScript.src 为空，resolveUrl() 无法确定基路径，
+   * fetch('./sounds/...') 静默失败，按键无声效。
+   * 修复：设置为 CDN 绝对路径。
+   */
+  try {
+    if (typeof MathfieldElement !== 'undefined') {
+      MathfieldElement.soundsDirectory = 'sounds';
+    }
+  } catch (eSounds) {}
+
+  (function init() {
+    mlMixedEnsureMathModeSpace();
+    mlMixedAttachVirtualKeyboard();
+    mlMixedFixKeys();
+    mlMixedSetupCustomCommands();
+    setTimeout(mlMixedNotifyHostChromeHeight, 0);
+    setTimeout(mlMixedNotifyHostChromeHeight, 200);
+
+    if (typeof customElements !== 'undefined' && customElements.whenDefined) {
+      customElements.whenDefined('math-field').then(function () {
+        mlMixedEnsureMathModeSpace();
+        mlMixedSetupKeyboardLayouts();
+        mlMixedAttachVirtualKeyboard();
+        mlMixedEnsureScrollFix();
+        mlMixedFixKeys();
+        mlMixedSetupCustomCommands();
+      }).catch(function () {});
+    }
+
+    setTimeout(mlMixedEnsureMathModeSpace, 0);
+    setTimeout(mlMixedAttachVirtualKeyboard, 50);
+    setTimeout(mlMixedAttachVirtualKeyboard, 300);
+    setTimeout(mlMixedFixKeys, 50);
+    setTimeout(mlMixedSetupCustomCommands, 50);
+    setTimeout(mlMixedSetupCustomCommands, 300);
+  })();
+</script>
+</body>
+</html>

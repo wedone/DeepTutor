@@ -36,6 +36,8 @@ class MainActivity : AppCompatActivity() {
     }
     private lateinit var errorView: LoadErrorView
     private lateinit var fab: FloatingSettingsButton
+    private lateinit var mathTrigger: android.widget.TextView
+    private var mathKeyboard: MathKeyboardView? = null
     private var atPageTop = true
     private var lastBackAt = 0L
 
@@ -149,6 +151,10 @@ class MainActivity : AppCompatActivity() {
         refresh.setOnChildScrollUpCallback { _, _ -> !atPageTop }
 
         onBackPressedDispatcher.addCallback(this) {
+            if (mathKeyboard?.visibility == View.VISIBLE) {
+                hideMathKeyboard()
+                return@addCallback
+            }
             if (webView.canGoBack()) {
                 webView.goBack()
                 return@addCallback
@@ -181,6 +187,24 @@ class MainActivity : AppCompatActivity() {
         root.addView(fab, FrameLayout.LayoutParams(fabSize, fabSize))
         restoreFabPosition()
 
+        mathTrigger = buildMathTrigger()
+        root.addView(
+            mathTrigger,
+            FrameLayout.LayoutParams(fabSize, fabSize).apply {
+                gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
+                setMargins(0, 0, dp(16), dp(168))
+            },
+        )
+
+        webView.setOnTouchListener { _, event ->
+            if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN &&
+                mathKeyboard?.visibility == View.VISIBLE
+            ) {
+                hideMathKeyboard()
+            }
+            false
+        }
+
         webView.loadUrl(serverUrl)
 
         // Android 8–9 写公共 Downloads 需要存储权限
@@ -197,7 +221,6 @@ class MainActivity : AppCompatActivity() {
     private fun installDocumentStartScript() {
         val scripts = mutableListOf(
             assets.open("shell.js").bufferedReader().use { it.readText() },
-            assets.open("mathlive-bridge.js").bufferedReader().use { it.readText() },
         )
         customLayer.css()?.let { scripts += CustomLayer.cssScript(it) }
         customLayer.script()?.let { scripts += CustomLayer.jsScript(it) }
@@ -273,6 +296,76 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun buildMathTrigger(): android.widget.TextView {
+        val tv = android.widget.TextView(this)
+        tv.text = "Σ"
+        tv.gravity = android.view.Gravity.CENTER
+        tv.setTextColor(Color.WHITE)
+        tv.textSize = 20f
+        tv.background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setColor(Color.parseColor("#4F8CFF"))
+        }
+        tv.alpha = 0.85f
+        tv.contentDescription = "数学公式"
+        tv.setOnClickListener { toggleMathKeyboard() }
+        return tv
+    }
+
+    private fun toggleMathKeyboard() {
+        if (mathKeyboard?.visibility == View.VISIBLE) hideMathKeyboard() else showMathKeyboard()
+    }
+
+    private fun showMathKeyboard() {
+        hideKeyboard()
+        // 面板显示期间不让系统输入法挤压布局
+        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+        val root = findViewById<FrameLayout>(R.id.root)
+        val panel = mathKeyboard ?: MathKeyboardView(
+            context = this,
+            assetLoader = mathLiveLoader,
+            insertCallback = ::insertMath,
+            heightCallback = ::applyMathPanelHeight,
+        ).also {
+            mathKeyboard = it
+            root.addView(
+                it,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    dp(360),
+                ).apply { gravity = android.view.Gravity.BOTTOM },
+            )
+        }
+        panel.visibility = View.VISIBLE
+        panel.setDark(isSystemDark())
+        panel.bringToFront()
+    }
+
+    private fun hideMathKeyboard() {
+        mathKeyboard?.visibility = View.GONE
+        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+    }
+
+    /** 键盘页面上报的 CSS 像素高度，换算为 dp 后约束在合理区间。 */
+    private fun applyMathPanelHeight(cssHeight: Int) {
+        val panel = mathKeyboard ?: return
+        if (cssHeight < 200) return
+        val density = resources.displayMetrics.density
+        val maxPx = (resources.displayMetrics.heightPixels * 0.62f).toInt()
+        val target = (cssHeight * density).toInt().coerceIn(dp(240), maxPx)
+        panel.layoutParams = panel.layoutParams.apply { height = target }
+        panel.requestLayout()
+    }
+
+    /** 把数学键盘选中的公式写入聊天输入框。 */
+    private fun insertMath(latex: String, mode: String) {
+        val js = "window.__dtInsertMath && window.__dtInsertMath(" +
+            org.json.JSONObject.quote(latex) + "," + org.json.JSONObject.quote(mode) + ")"
+        webView.evaluateJavascript(js, null)
+    }
+
     private fun applySystemBars(dark: Boolean) {
         // API 35 下 statusBarColor 已失效，由根布局背景承担系统栏底色
         val controller = WindowInsetsControllerCompat(window, window.decorView)
@@ -312,5 +405,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         webView.onResume()
+    }
+
+    override fun onDestroy() {
+        mathKeyboard?.destroy()
+        mathKeyboard = null
+        super.onDestroy()
     }
 }

@@ -223,3 +223,288 @@
   }
 })();
 
+// 底部导航 dock：Web 端在窄屏下只把侧边栏变成抽屉，一级入口仍藏在左上角。
+// 这里注入移动端常见的底部导航，隐藏页面顶部 44px 汉堡条，
+// 把抽屉入口收进「更多」；软键盘或原生数学键盘打开时自动隐藏。
+(function () {
+  if (window.__dtDockInstalled) return;
+  window.__dtDockInstalled = true;
+
+  var DOCK_ID = 'dt-dock';
+  var STYLE_ID = 'dt-dock-style';
+  var DOCK_HEIGHT = 56;
+  var MOBILE_MAX = 767.98;
+  var KEYBOARD_THRESHOLD = 120;
+
+  var TABS = [
+    { href: '/chat', label: '首页', icon: '<path d="M3.5 10.4 12 3.6l8.5 6.8V20a1 1 0 0 1-1 1h-5v-6.3H9.5V21h-5a1 1 0 0 1-1-1z"/>' },
+    { href: '/learning', label: '学习', icon: '<path d="M22 9.6 12 4.3 2 9.6l10 5.3 10-5.3z"/><path d="M6 12.3v4.6c0 1.8 2.7 3.2 6 3.2s6-1.4 6-3.2v-4.6"/>' },
+    { href: '/space', label: '资源', icon: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.7"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.7"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.7"/>' },
+    { href: '/partners', label: '伙伴', icon: '<circle cx="9" cy="8" r="3.2"/><path d="M2.9 20c0-3.1 2.7-5.1 6.1-5.1s6.1 2 6.1 5.1"/><path d="M16.3 5.2a3.2 3.2 0 0 1 0 6.2"/><path d="M17.5 15c2.1.6 3.6 2.1 3.6 4.3"/>' },
+  ];
+  var MORE_ICON =
+    '<circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/>' +
+    '<circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>' +
+    '<circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>';
+
+  var state = {
+    keyboard: false,
+    native: false,
+    drawer: false,
+    dock: null,
+    bar: null,
+    hamburger: null,
+    hamburgerObserver: null,
+    rootEl: null,
+    rootSavedHeight: null,
+    scheduled: false,
+  };
+
+  function isNarrow() {
+    return (window.innerWidth || document.documentElement.clientWidth || 0) < MOBILE_MAX;
+  }
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    var style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = [
+      '#' + DOCK_ID + '{position:fixed;left:0;right:0;bottom:0;height:' + DOCK_HEIGHT + 'px;display:flex;',
+      'z-index:45;box-sizing:border-box;padding:0 4px;background:var(--background,#fff);',
+      'border-top:1px solid var(--border,rgba(0,0,0,.08));',
+      'transition:opacity 160ms ease,transform 160ms ease;',
+      'font-family:inherit;-webkit-tap-highlight-color:transparent;}',
+      '#' + DOCK_ID + '.is-hidden{opacity:0;transform:translateY(100%);pointer-events:none;}',
+      '#' + DOCK_ID + '.is-off{display:none;}',
+      '#' + DOCK_ID + ' .dt-dock-item{flex:1 1 0;min-width:0;display:flex;flex-direction:column;',
+      'align-items:center;justify-content:center;gap:2px;margin:0;padding:0;border:0;',
+      'background:transparent;color:var(--muted-foreground,#8a8a8a);font:inherit;font-size:10px;',
+      'line-height:1.25;text-decoration:none;cursor:pointer;-webkit-user-select:none;user-select:none;}',
+      '#' + DOCK_ID + ' .dt-dock-item svg{width:22px;height:22px;display:block;}',
+      '#' + DOCK_ID + ' .dt-dock-item.is-active{color:var(--foreground,#37352f);}',
+      '#' + DOCK_ID + ' .dt-dock-item.is-active span{font-weight:600;}',
+      '#' + DOCK_ID + ' .dt-dock-item:active{opacity:.55;}',
+      '@media (prefers-reduced-motion:reduce){#' + DOCK_ID + '{transition:none;}}',
+    ].join('');
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  /** 页面里是否存在可直接点击的站内链接，避免整页刷新。 */
+  function findLink(href) {
+    var links = document.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var el = links[i];
+      if (el.closest('#' + DOCK_ID)) continue;
+      var raw = el.getAttribute('href') || '';
+      var path = raw.split('?')[0].split('#')[0];
+      if (path === href) return el;
+    }
+    return null;
+  }
+
+  function navigate(href) {
+    if (location.pathname === href || location.pathname.indexOf(href + '/') === 0) return;
+    var link = findLink(href);
+    if (!link) {
+      location.assign(href);
+      return;
+    }
+    var before = location.pathname;
+    try {
+      link.click();
+    } catch (e) {}
+    // 链接被拦截但路由没变（例如链接位于 inert 容器）时回退整页跳转
+    setTimeout(function () {
+      if (location.pathname === before) location.assign(href);
+    }, 350);
+  }
+
+  function buildDock() {
+    var nav = document.createElement('nav');
+    nav.id = DOCK_ID;
+    nav.setAttribute('role', 'navigation');
+    nav.setAttribute('aria-label', '主导航');
+    TABS.forEach(function (tab) {
+      var item = document.createElement('a');
+      item.className = 'dt-dock-item';
+      item.href = tab.href;
+      item.setAttribute('data-dt-href', tab.href);
+      item.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + tab.icon + '</svg>' +
+        '<span>' + tab.label + '</span>';
+      item.addEventListener('click', function (event) {
+        event.preventDefault();
+        navigate(tab.href);
+      });
+      nav.appendChild(item);
+    });
+    var more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'dt-dock-item';
+    more.id = DOCK_ID + '-more';
+    more.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + MORE_ICON + '</svg>' +
+      '<span>更多</span>';
+    more.addEventListener('click', function () {
+      if (state.hamburger) state.hamburger.click();
+    });
+    nav.appendChild(more);
+    document.body.appendChild(nav);
+    state.dock = nav;
+    return nav;
+  }
+
+  function updateActive() {
+    if (!state.dock) return;
+    var path = location.pathname || '/';
+    var items = state.dock.querySelectorAll('[data-dt-href]');
+    for (var i = 0; i < items.length; i++) {
+      var href = items[i].getAttribute('data-dt-href');
+      var active = path === href || path.indexOf(href + '/') === 0 || (href === '/chat' && path === '/');
+      items[i].classList.toggle('is-active', active);
+      if (active) items[i].setAttribute('aria-current', 'page');
+      else items[i].removeAttribute('aria-current');
+    }
+  }
+
+  function findRoot() {
+    var nodes = document.querySelectorAll('div.h-dvh');
+    return nodes.length ? nodes[0] : null;
+  }
+
+  /** 压缩 Web 根容器高度，让内部滚动与聊天输入框整体上移，而不是被 dock 盖住。 */
+  function setRootShift(on) {
+    var el = findRoot();
+    if (!el) return;
+    if (el !== state.rootEl) {
+      state.rootEl = el;
+      state.rootSavedHeight = el.style.height || '';
+    }
+    if (on) {
+      el.style.height = 'calc(100dvh - ' + DOCK_HEIGHT + 'px)';
+    } else if (state.rootSavedHeight) {
+      el.style.height = state.rootSavedHeight;
+    } else {
+      el.style.height = '';
+    }
+  }
+
+  function bindDrawer() {
+    if (state.hamburgerObserver) {
+      state.hamburgerObserver.disconnect();
+      state.hamburgerObserver = null;
+    }
+    var btn = state.hamburger;
+    state.drawer = !!btn && btn.getAttribute('aria-expanded') === 'true';
+    if (!btn) return;
+    try {
+      state.hamburgerObserver = new MutationObserver(function () {
+        var open = btn.getAttribute('aria-expanded') === 'true';
+        if (open === state.drawer) return;
+        state.drawer = open;
+        apply();
+      });
+      state.hamburgerObserver.observe(btn, { attributes: true, attributeFilter: ['aria-expanded'] });
+    } catch (e) {}
+  }
+
+  /** 隐藏移动端顶栏（汉堡 + logo），汉堡按钮保留在 DOM 中供「更多」调用。 */
+  function syncBar() {
+    var main = document.querySelector('main');
+    var bar = main && main.firstElementChild;
+    if (!bar || String(bar.className || '').indexOf('md:hidden') < 0) return;
+    if (state.bar !== bar) {
+      state.bar = bar;
+      state.hamburger = bar.querySelector('button');
+      bindDrawer();
+    }
+    var shouldHide = isNarrow();
+    var hidden = bar.style.display === 'none';
+    if (shouldHide && !hidden) bar.style.display = 'none';
+    else if (!shouldHide && hidden) bar.style.display = '';
+  }
+
+  function apply() {
+    var hasMain = !!document.querySelector('main');
+    var narrow = isNarrow();
+    var visible = hasMain && narrow && !state.drawer && !state.keyboard && !state.native;
+    if (state.dock) {
+      state.dock.classList.toggle('is-off', !hasMain || !narrow);
+      state.dock.classList.toggle('is-hidden', hasMain && narrow && !visible);
+    }
+    setRootShift(visible);
+    updateActive();
+  }
+
+  function checkKeyboard() {
+    var vv = window.visualViewport;
+    var open = !!vv && (window.innerHeight - vv.height) > KEYBOARD_THRESHOLD;
+    if (open === state.keyboard) return;
+    state.keyboard = open;
+    apply();
+  }
+
+  function sync() {
+    state.scheduled = false;
+    var hasMain = !!document.querySelector('main');
+    if (!hasMain) {
+      // 登录/注册等无 AppShell 的页面：不显示 dock，并撤销顶栏与高度改动
+      if (state.bar && state.bar.style.display === 'none') state.bar.style.display = '';
+      if (state.rootEl) setRootShift(false);
+      if (state.dock) {
+        state.dock.remove();
+        state.dock = null;
+      }
+      return;
+    }
+    ensureStyle();
+    if (!state.dock) buildDock();
+    syncBar();
+    apply();
+  }
+
+  function schedule() {
+    if (state.scheduled) return;
+    state.scheduled = true;
+    requestAnimationFrame(sync);
+  }
+
+  // 原生侧（数学键盘面板）通过该入口抑制 dock，与软键盘共用同一套隐藏逻辑
+  window.__dtSetDockSuppressed = function (suppressed) {
+    state.native = !!suppressed;
+    apply();
+  };
+
+  function start() {
+    ensureStyle();
+    schedule();
+    try {
+      new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    } catch (e) {}
+    window.addEventListener('popstate', schedule);
+    window.addEventListener('resize', function () {
+      checkKeyboard();
+      schedule();
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', checkKeyboard);
+    }
+    // Next 的 SPA 跳转走 history.pushState，不触发 popstate，这里轮询兜底
+    var lastPath = location.pathname;
+    setInterval(function () {
+      if (location.pathname !== lastPath) {
+        lastPath = location.pathname;
+        schedule();
+      }
+    }, 500);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
+

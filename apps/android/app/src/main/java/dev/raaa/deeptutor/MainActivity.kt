@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var mathTrigger: android.widget.TextView
     private var mathKeyboard: MathKeyboardView? = null
     private var atPageTop = true
+    private var dockSuppressed = false
     private var lastBackAt = 0L
     private var barsBottomPx = 0
     private var imeBottomPx = 0
@@ -208,7 +209,7 @@ class MainActivity : AppCompatActivity() {
             mathTrigger,
             FrameLayout.LayoutParams(triggerSize, triggerSize).apply {
                 gravity = android.view.Gravity.BOTTOM or android.view.Gravity.END
-                setMargins(0, 0, dp(16), dp(168))
+                setMargins(0, 0, dp(16), dp(224))
             },
         )
         mathTrigger.visibility = if (store.mathKeyboardEnabled) View.VISIBLE else View.GONE
@@ -378,6 +379,17 @@ class MainActivity : AppCompatActivity() {
         refresh.postDelayed({ syncContentInset() }, 450)
     }
 
+    /** 系统输入法或数学键盘面板占用底部时，通知 Web 的底部 dock 让位。 */
+    private fun updateDockSuppressed() {
+        val suppressed = isImeVisible() || panelBottomPx > 0
+        if (suppressed == dockSuppressed) return
+        dockSuppressed = suppressed
+        webView.evaluateJavascript(
+            "window.__dtSetDockSuppressed && window.__dtSetDockSuppressed($suppressed)",
+            null,
+        )
+    }
+
     /**
      * 内容区底部让位：数学键盘面板优先，否则按「系统输入法超出导航栏的部分」让位。
      * 效果等同原生 App 的 adjustResize，键盘收起后自动恢复满屏。
@@ -392,6 +404,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             (imeBottomPx - barsBottomPx).coerceAtLeast(0)
         }
+        updateDockSuppressed()
         val lp = refresh.layoutParams as FrameLayout.LayoutParams
         if (lp.bottomMargin == margin) return
         lp.bottomMargin = margin

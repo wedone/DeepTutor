@@ -16,6 +16,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 
@@ -27,6 +28,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var refresh: SwipeRefreshLayout
     private lateinit var uploadPicker: UploadPicker
     private lateinit var customLayer: CustomLayer
+    private val mathLiveLoader: WebViewAssetLoader by lazy {
+        WebViewAssetLoader.Builder()
+            .setDomain(MathLiveAssetHandler.DOMAIN)
+            .addPathHandler(MathLiveAssetHandler.PATH_PREFIX, MathLiveAssetHandler(assets))
+            .build()
+    }
     private lateinit var errorView: LoadErrorView
     private lateinit var fab: FloatingSettingsButton
     private var atPageTop = true
@@ -85,6 +92,7 @@ class MainActivity : AppCompatActivity() {
             serverUrl = { store.serverUrl.orEmpty() },
             onMainFrameError = { message -> runOnUiThread { showLoadError(message) } },
             fallbackScript = currentFallbackScript(),
+            assetLoader = mathLiveLoader,
         )
         webView.settings.setSupportMultipleWindows(true)
         webView.webChromeClient = object : ShellChromeClient(uploadPicker, { value ->
@@ -189,6 +197,7 @@ class MainActivity : AppCompatActivity() {
     private fun installDocumentStartScript() {
         val scripts = mutableListOf(
             assets.open("shell.js").bufferedReader().use { it.readText() },
+            assets.open("mathlive-bridge.js").bufferedReader().use { it.readText() },
         )
         customLayer.css()?.let { scripts += CustomLayer.cssScript(it) }
         customLayer.script()?.let { scripts += CustomLayer.jsScript(it) }

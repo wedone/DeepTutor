@@ -26,7 +26,7 @@
     <string name="settings_immersive">沉浸模式</string>
     <string name="settings_immersive_desc">隐藏状态栏，边缘下滑可临时调出</string>
     <string name="settings_math_keyboard">数学公式键盘</string>
-    <string name="settings_math_keyboard_desc">在页面上显示 Σ 悬浮按钮，用于输入 LaTeX 公式</string>
+    <string name="settings_math_keyboard_desc">在页面上显示悬浮键盘按钮，用于输入 LaTeX 公式</string>
     <string name="settings_custom_layer_hint">自定义样式目录（含 custom.css / custom.js，留空关闭）</string>
     <string name="settings_custom_layer_apply">保存并应用注入</string>
     <string name="custom_layer_saved">注入配置已更新</string>

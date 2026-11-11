@@ -331,7 +331,7 @@ apps/android/
 
 | 方案 | 做法 | 结论 |
 | --- | --- | --- |
-| A. 公式按钮 + 底部 MathLive 面板 | 工具栏加 Σ 按钮，弹出 `<math-field>` 面板，确认后把 LaTeX 以 `$...$` 插入光标处 | **推荐**：对现有 textarea 零侵入，移动端可与系统输入法互斥切换 |
+| A. 公式按钮 + 底部 MathLive 面板 | 工具栏加公式按钮，弹出 `<math-field>` 面板，确认后把 LaTeX 以 `$...$` 插入光标处 | **推荐**：对现有 textarea 零侵入，移动端可与系统输入法互斥切换 |
 | B. 轻量符号工具条 | 一排分数/根号/上下标/积分按钮，点击插入 LaTeX 模板 | 体积最小，可作为 A 的快捷补充，但不具备自由编辑能力 |
 | C. `math-field` 直接替换 textarea | 富文本混合编辑 | 不做：需自行维护文本/公式分段、光标、IME、粘贴与草稿兼容，改动远超收益 |
 
@@ -342,7 +342,7 @@ apps/android/
 3. 组件：新增 `web/components/chat/home/MathInputPanel.tsx`（Client Component，`dynamic(..., { ssr: false })`），内含 `<math-field>` 与 MathLive 虚拟键盘。
 4. 焦点与输入法切换：打开面板时让 `textarea` 失焦（系统输入法收起），面板内可切换「数学键盘 / 系统键盘」；关闭面板后把焦点还给 `textarea`，系统输入法恢复。
 5. 插入：`ComposerInput` 新增 `insertAtCursor(text)`（读取 `selectionStart` / `selectionEnd`，拼接后调用 `setInputBoth`，恢复光标并聚焦）；`ChatComposer` 用 `$...$` 包裹 `mathfield.getValue('latex')` 后调用。
-6. 入口与文案：工具栏 `styles.context` 区域新增 Σ 按钮，文案走 `web/locales`。
+6. 入口与文案：工具栏 `styles.context` 区域新增公式按钮，文案走 `web/locales`。
 7. 主题：MathLive CSS 变量映射到现有 `--foreground` / `--background` / `--primary`，随 `html.dark` 切换。
 8. 体积：`mathlive` 必须惰性加载；合入前跑 `npm run perf:check` 复核路由预算。
 9. 测试：Vitest 覆盖 `insertAtCursor` 的拼接与光标行为（不渲染 `math-field`）；真机验收覆盖 WebView 与手机浏览器。

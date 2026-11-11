@@ -78,6 +78,33 @@
     copy[index < 0 ? copy.length + index : index] = value;
     return copy;
   });
+
+  // 旧内核（Chrome 116 及更早）不支持相对路径的 WebSocket URL，
+  // 前端用 "/ws?..." 建连会直接抛 TypeError，表现为消息发不出去。
+  // 这里统一解析成绝对地址，新版内核行为不变。
+  (function () {
+    var Native = window.WebSocket;
+    if (typeof Native !== 'function') return;
+    function resolveUrl(url) {
+      if (typeof url !== 'string') return url;
+      if (/^wss?:\/\//i.test(url)) return url;
+      try {
+        return new URL(url, location.href).href.replace(/^http/i, 'ws');
+      } catch (e) {
+        return url;
+      }
+    }
+    function Patched(url, protocols) {
+      var target = resolveUrl(url);
+      return protocols === undefined ? new Native(target) : new Native(target, protocols);
+    }
+    Patched.prototype = Native.prototype;
+    Patched.CONNECTING = 0;
+    Patched.OPEN = 1;
+    Patched.CLOSING = 2;
+    Patched.CLOSED = 3;
+    window.WebSocket = Patched;
+  })();
 })();
 
 // DeepTutor Android 壳注入脚本：只做主题与滚动状态上报，不修改页面逻辑。

@@ -802,6 +802,9 @@
 
   /** 隐藏移动端顶栏（汉堡 + logo），汉堡按钮保留在 DOM 中供「更多」调用。 */
   function syncBar() {
+    // 设置页自带移动端顶栏（返回 + 分类菜单入口），虽然同样带 md:hidden，
+    // 但它不是 AppShell 导航条；隐藏后窄屏下将无法切换设置分类，因此跳过。
+    if (document.querySelector('[data-settings-shell]')) return;
     var main = document.querySelector('main');
     var bar = main && main.firstElementChild;
     if (!bar || String(bar.className || '').indexOf('md:hidden') < 0) return;
